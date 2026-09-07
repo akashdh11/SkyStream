@@ -174,7 +174,7 @@
   "installRemoveProviders": "Provayderləri quraşdır və ya çıxar",
   "resetDataSubtitle": "Parametrləri və verilənlər bazasını təmizlə, plagini saxla",
   "factoryResetSubtitle": "Bütün məlumatları, parametrləri və genişləndirmələri sil",
-  "developerOptionsSubtitle": "Sazlama alətləri və lokal oxutma",
+  "developerOptionsSubtitle": "Sazlama alətləri və lokal oynatma",
   "loading": "Yüklənir...",
   "sec": "san",
   "min": "dəq",
@@ -338,7 +338,7 @@
   "resumeNow": "İndi davam et",
   "playbackError": "Oxutma xətası",
   "confirmClearHistory": "Baxış tarixçəndəki bütün elementləri silmək istədiyinə əminsən?",
-  "seasonWithNumber": "Sezon {number}",
+  "seasonWithNumber": "Mövsüm {number}",
   "@seasonWithNumber": {
     "placeholders": {
       "number": {
@@ -448,7 +448,7 @@
       }
     }
   },
-  "seasonWithEpisodes": "Sezon {number} ({count} epizod)",
+  "seasonWithEpisodes": "Mövsüm {number} ({count} epizod)",
   "@seasonWithEpisodes": {
     "placeholders": {
       "number": {
@@ -479,7 +479,7 @@
   "noPluginsMessage": "Məzmuna baxmaq və onu yayımlamaq üçün genişləndirmə quraşdır.",
   "goToExtensions": "Genişləndirmələrə keç",
   "availableSources": "Mövcud mənbələr",
-  "seasons": "Sezonlar",
+  "seasons": "Mövsümlər",
   "episodes": "Epizodlar",
   "selectSourceToPlay": "Oynatmaq üçün yuxarıdakı 'Mövcud mənbələr' bölməsindən mənbə seç.",
   "episodeCountOnly": "{count, plural, =1{1 epizod} other{{count} epizod}}",
@@ -521,7 +521,7 @@
   "showMore": "Daha çox göstər",
   "showLess": "Daha az göstər",
   "viewAll": "Hamısına bax",
-  "seasonsCount": "{count} sezon",
+  "seasonsCount": "{count} mövsüm",
   "@seasonsCount": {
     "placeholders": {
       "count": {
@@ -699,6 +699,6 @@
   },
   "audioDelay": "Audio gecikməsi",
   "subtitleSearchTitleFallback": "Bu başlığın ID-sinə uyğun heç nə tapılmadı. Əvəzində başlığa uyğun nəticələr göstərilir.",
-  "subtitleSearchSeasonFallback": "Bu epizod üçün altyazı yoxdur. Bunlar bütün sezona aiddir, ona görə fayl adındakı epizod nömrəsini yoxla.",
+  "subtitleSearchSeasonFallback": "Bu epizod üçün altyazı yoxdur. Bunlar bütün mövsümə aiddir, ona görə fayl adındakı epizod nömrəsini yoxla.",
   "subtitleAccountsNotConfigured": "Heç bir altyazı hesabı qurulmayıb. Onlayn axtarış üçün Parametrlərdə OpenSubtitles, SubDL və ya SubSource açarı əlavə et."
 }
