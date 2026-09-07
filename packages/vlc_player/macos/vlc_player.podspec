@@ -14,14 +14,36 @@ A macOS Flutter plugin for video playback using VideoLAN VLCKit.
   s.author           = { 'lingjhf' => 'lingjhf@users.noreply.github.com' }
 
   s.source           = { :path => '.' }
-  s.source_files = 'vlc_player/Sources/vlc_player/**/*.swift'
+  # The renderer and VlcSharedSources.cc are symlinks into ../darwin, the one
+  # copy both Darwin pods compile. They have to appear here as files because
+  # CocoaPods only globs inside the pod root: `../darwin/**` matches nothing,
+  # and `../src/native/*.cc` is why VlcSharedSources.cc exists at all. Only the
+  # parts VLCKit does not already provide are pulled in - vlc_player_core.cc
+  # owns a libvlc instance of its own, and here VLCKit owns the media player.
+  s.source_files = 'vlc_player/Sources/vlc_player/**/*.{swift,h,mm,cc}'
+  # Only the Objective-C renderer belongs in the generated umbrella header;
+  # that umbrella is compiled as Objective-C, and the shared headers are C++.
+  s.public_header_files = 'vlc_player/Sources/vlc_player/VlcTextureRenderer.h'
   s.resource_bundles = {'vlc_player_privacy' => ['vlc_player/Sources/vlc_player/PrivacyInfo.xcprivacy']}
 
   s.dependency 'FlutterMacOS'
   s.dependency 'VLCKit', '3.7.3'
 
   s.platform = :osx, '10.15'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
+    'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
+    'CLANG_CXX_LIBRARY' => 'libc++',
+    # VLCKit ships the libvlc C headers under its framework's Headers/vlc, so
+    # `#include <vlc/vlc.h>` resolves exactly as it does on Windows and Linux.
+    # Both spellings are listed because CocoaPods builds against the extracted
+    # slice while the checked-in xcframework keeps its own copy.
+    'HEADER_SEARCH_PATHS' => [
+      '"$(PODS_TARGET_SRCROOT)/../src/native"',
+      '"$(PODS_XCFRAMEWORKS_BUILD_DIR)/VLCKit/VLCKit.framework/Headers"',
+      '"$(PODS_ROOT)/VLCKit/VLCKit.xcframework/macos-arm64_x86_64/VLCKit.framework/Headers"',
+    ].join(' '),
+  }
   s.script_phase = {
     :name => 'Patch VLCKit runtime path',
     :execution_position => :after_compile,

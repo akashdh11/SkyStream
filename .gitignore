@@ -90,3 +90,5 @@ skystream-tools/
 tree-shaking-test*.js
 
 node_modules/
+# Widget Preview related
+.widget_preview/

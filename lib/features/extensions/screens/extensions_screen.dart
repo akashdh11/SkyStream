@@ -1,13 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/utils/layout_constants.dart';
 import '../../../core/extensions/models/extension_plugin.dart';
 import '../../../core/extensions/models/extension_repository.dart';
 import '../../../core/extensions/extension_manager.dart';
-import '../../../shared/widgets/custom_widgets.dart';
 import '../providers/extensions_controller.dart';
 import 'plugin_settings_screen.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../../../shared/widgets/text_input_dialog.dart';
 import '../../../core/router/app_router.dart';
 import 'package:skystream/l10n/generated/app_localizations.dart';
 
@@ -755,60 +757,18 @@ class _ExtensionsScreenState extends ConsumerState<ExtensionsScreen>
     });
   }
 
-  void _showAddRepoDialog(BuildContext context, WidgetRef ref) {
+  Future<void> _showAddRepoDialog(BuildContext context, WidgetRef ref) async {
     final l10n = AppLocalizations.of(context)!;
-    final controller = TextEditingController();
-
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        surfaceTintColor: Colors.transparent,
-        title: Text(l10n.addRepository),
-        content: CustomTextField(
-          controller: controller,
-          hintText: l10n.repoUrlOrShortcode,
-          autofocus: true,
-          textInputAction: TextInputAction.done,
-          onSubmitted: (value) {
-            if (value.isNotEmpty) {
-              ref
-                  .read(extensionsControllerProvider.notifier)
-                  .addRepository(value);
-              Navigator.pop(context);
-            }
-          },
-        ),
-        actions: [
-          CustomButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              l10n.cancel,
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          const SizedBox(width: LayoutConstants.spacingXs),
-          CustomButton(
-            isPrimary: true,
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                ref
-                    .read(extensionsControllerProvider.notifier)
-                    .addRepository(controller.text);
-                Navigator.pop(context);
-              }
-            },
-            child: Text(l10n.addRepo),
-          ),
-        ],
-      ),
-    ).then((_) {
-      controller.dispose();
-      if (context.mounted) {
-        // Automatically handled by framework
-      }
-    });
+    final url = await TextInputDialog.show(
+      context,
+      title: l10n.addRepository,
+      hintText: l10n.repoUrlOrShortcode,
+      confirmLabel: l10n.addRepo,
+    );
+    if (url == null || url.isEmpty || !context.mounted) return;
+    unawaited(
+      ref.read(extensionsControllerProvider.notifier).addRepository(url),
+    );
   }
 }
 

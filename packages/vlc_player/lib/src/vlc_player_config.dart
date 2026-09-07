@@ -66,6 +66,69 @@ enum VlcAdaptiveLogic {
   };
 }
 
+/// What happens to playback when the host application leaves the foreground.
+///
+/// The one entry in [VlcPlayerConfig] that is not a libVLC option. libVLC has
+/// no notion of an application lifecycle, so somebody has to hold this policy;
+/// holding it here means every embedder inherits the same answer instead of
+/// each one re-deriving it from `Platform` in its own screen.
+enum VlcBackgroundPolicy {
+  /// Pause on the way out, and resume on the way back.
+  ///
+  /// The resume is conditional on this policy having been what paused it. A
+  /// viewer who paused deliberately and then pressed Home comes back to a
+  /// paused player, which is what they left.
+  pause,
+
+  /// Leave the player decoding.
+  ///
+  /// Spelled this way because `continue` is a reserved word.
+  keepPlaying,
+}
+
+/// How the video surface reaches the screen on macOS and iOS.
+enum VlcDarwinRenderer {
+  /// A native platform view (`AppKitView` / `UiKitView`) holding VLC's own
+  /// video view.
+  ///
+  /// The path that shipped first, kept one flag away. Its cost is that any
+  /// Flutter widget drawn above the video forces the embedder to composite
+  /// Flutter content over a native view - on macOS by slicing the overlay
+  /// into IOSurfaces every frame, on iOS through the equivalent overlay
+  /// layers - and that composite can drop the video for a frame.
+  platformView,
+
+  /// A Flutter `Texture` fed from a CVPixelBuffer pool.
+  ///
+  /// Puts the video back inside the Flutter layer tree, so controls painted
+  /// over it are ordinary Flutter painting. One renderer serves both
+  /// platforms; see [VlcPlayerConfig.defaultDarwinRenderer] for what has been
+  /// measured where.
+  texture,
+}
+
+/// How the video surface reaches the screen on Android.
+enum VlcAndroidRenderer {
+  /// A native platform view (`AndroidView`) holding a `VLCVideoLayout`.
+  ///
+  /// The path that shipped first, kept one flag away. It does not flicker -
+  /// Flutter composites the view through a texture of its own - but it pays
+  /// for that with two full-frame compositions per frame (MediaCodec into the
+  /// layout's TextureView, then the view into Flutter), a frame of latency,
+  /// the platform view's input plumbing, and a focus node the widget has to
+  /// exclude from traversal.
+  platformView,
+
+  /// A Flutter `Texture` fed straight from the decoder.
+  ///
+  /// libVLC draws into a surface the engine owns, so the video is composited
+  /// once, with everything else in the frame, and fit and clipping are
+  /// ordinary widget layout - the same Dart path Windows, Linux and the Darwin
+  /// texture use. Subtitles are blended into the picture by libVLC because
+  /// there is no second surface for them.
+  texture,
+}
+
 /// Network and HTTP behaviour.
 @immutable
 class VlcNetworkConfig {
@@ -324,6 +387,9 @@ class VlcPlayerConfig {
     this.subtitleStyle,
     this.showVideoTitle = false,
     this.verbose = false,
+    this.backgroundPolicy,
+    this.darwinRenderer = defaultDarwinRenderer,
+    this.androidRenderer = defaultAndroidRenderer,
     this.extraOptions = const <String>[],
   });
 
@@ -344,6 +410,98 @@ class VlcPlayerConfig {
 
   /// Whether to raise libVLC log verbosity. Defaults to quiet.
   final bool verbose;
+
+  /// What to do with playback when the app leaves the foreground.
+  ///
+  /// Null defers to [platformDefaultBackgroundPolicy], which is what most
+  /// hosts want. Set it only where the app genuinely disagrees with its
+  /// platform — a podcast player on Android, say.
+  ///
+  /// Unlike everything else here this contributes nothing to [toOptions]; the
+  /// controller reads it directly.
+  final VlcBackgroundPolicy? backgroundPolicy;
+
+  /// The policy a platform gets when the host expresses no preference.
+  ///
+  /// Mobile pauses. A backgrounded Android or iOS app that keeps libVLC
+  /// decoding is burning battery on frames nobody can see and playing audio
+  /// the user has no notification to stop.
+  ///
+  /// Desktop keeps playing. A window behind another window is still a window
+  /// somebody is listening to, and cmd-tab must not stop the film.
+  static VlcBackgroundPolicy get platformDefaultBackgroundPolicy =>
+      switch (defaultTargetPlatform) {
+        TargetPlatform.android ||
+        TargetPlatform.iOS => VlcBackgroundPolicy.pause,
+        _ => VlcBackgroundPolicy.keepPlaying,
+      };
+
+  /// How video reaches the screen on macOS and iOS.
+  ///
+  /// The second entry here that is not a libVLC option. Hosts pass it on to
+  /// [VlcPlayer.darwinRenderer]; the widget cannot read it from the controller
+  /// because the controller keeps the flattened option list, not the config.
+  ///
+  /// Honoured on macOS and iOS. Android has its own switch in
+  /// [androidRenderer]; Windows and Linux have a single renderer and ignore
+  /// both.
+  final VlcDarwinRenderer darwinRenderer;
+
+  /// The renderer a Darwin platform gets when the host expresses no
+  /// preference. Both macOS and iOS consult it.
+  ///
+  /// The texture, because the platform view flickers. Every Flutter layer
+  /// drawn over an AppKitView becomes an embedder overlay surface, and any
+  /// repaint of one - a hovered button, a fading bar - can drop the video for
+  /// a frame, showing whatever is painted beneath it. Measured on a 5K
+  /// display, 1080p and 4K, 2026-09-06: platform view flickered on every
+  /// control interaction and flashed the backdrop at startup; the texture did
+  /// neither. iOS follows the same default because a UiKitView carries the
+  /// identical compositing cost and the renderer behind the texture is the
+  /// one just verified - and on iOS it has run on the simulator (frames, no
+  /// green band, clean close) but not yet on a device, where VideoToolbox
+  /// differs. Flipping this constant is the single switch for every host.
+  static const VlcDarwinRenderer defaultDarwinRenderer =
+      VlcDarwinRenderer.texture;
+
+  /// How video reaches the screen on Android.
+  ///
+  /// The Android counterpart of [darwinRenderer], and like it not a libVLC
+  /// option: hosts pass it on to [VlcPlayer.androidRenderer].
+  final VlcAndroidRenderer androidRenderer;
+
+  /// The renderer Android gets when the host expresses no preference.
+  ///
+  /// The platform view, deliberately, even though the texture is the default
+  /// everywhere else. A single-surface texture costs libVLC 3 its hardware
+  /// decoder: `android/display.c` refuses to open on an opaque MediaCodec
+  /// surface with nowhere to blend subtitles ("cannot blend subtitles with an
+  /// opaque surface, trying next vout"), the MediaCodec module then fails
+  /// ("Opaque Vout request failed") and playback falls back to avcodec
+  /// software decode - which on a Chromecast turns 1080p into a stutter and
+  /// 4K into nothing. VLCVideoLayout avoids this by attaching a second
+  /// TextureView for subtitles, and that is the only reason the platform view
+  /// keeps hardware decode. Two more blockers sit behind that one: Flutter's
+  /// ImageReaderSurfaceProducer reports `handlesCropAndRotation() == false`, so
+  /// hardware-decoded 1920x1088 buffers would render their padding rows; and
+  /// the texture path drops the sample aspect ratio the view honours.
+  ///
+  /// The texture target stays in the tree as the base for the real fix - a
+  /// second SurfaceProducer for subtitles, mirroring VLCVideoLayout - and is
+  /// selectable through [VlcPlayerConfig.androidRenderer] for that work. Do
+  /// not flip this until a device shows `mediacodec_ndk` in the libVLC log
+  /// with the texture selected.
+  static const VlcAndroidRenderer defaultAndroidRenderer =
+      VlcAndroidRenderer.platformView;
+
+  /// [backgroundPolicy], resolved against the platform default.
+  ///
+  /// Deliberately a getter rather than a value settled in the constructor:
+  /// [VlcPlayerConfig] is const-constructible, and `defaultTargetPlatform` is
+  /// overridable, so resolving early would bake in whatever platform happened
+  /// to be current when the config literal was evaluated.
+  VlcBackgroundPolicy get effectiveBackgroundPolicy =>
+      backgroundPolicy ?? platformDefaultBackgroundPolicy;
 
   /// Raw options appended verbatim, after everything above.
   ///
@@ -370,6 +528,9 @@ class VlcPlayerConfig {
     VlcSubtitleStyle? subtitleStyle,
     bool? showVideoTitle,
     bool? verbose,
+    VlcBackgroundPolicy? backgroundPolicy,
+    VlcDarwinRenderer? darwinRenderer,
+    VlcAndroidRenderer? androidRenderer,
     List<String>? extraOptions,
   }) {
     return VlcPlayerConfig(
@@ -378,6 +539,9 @@ class VlcPlayerConfig {
       subtitleStyle: subtitleStyle ?? this.subtitleStyle,
       showVideoTitle: showVideoTitle ?? this.showVideoTitle,
       verbose: verbose ?? this.verbose,
+      backgroundPolicy: backgroundPolicy ?? this.backgroundPolicy,
+      darwinRenderer: darwinRenderer ?? this.darwinRenderer,
+      androidRenderer: androidRenderer ?? this.androidRenderer,
       extraOptions: extraOptions ?? this.extraOptions,
     );
   }

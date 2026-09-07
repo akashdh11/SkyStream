@@ -4,7 +4,7 @@ import 'package:file_picker/file_picker.dart';
 
 import 'dart:async';
 
-import '../../../shared/widgets/custom_widgets.dart';
+import '../../../shared/widgets/text_input_dialog.dart';
 import '../../extensions/providers/extensions_controller.dart';
 import '../../../core/storage/settings_repository.dart';
 import '../../../core/domain/entity/multimedia_item.dart';
@@ -193,72 +193,42 @@ class _DeveloperOptionsScreenState
     }
   }
 
-  void _showStreamUrlDialog(BuildContext context, bool isTv) {
+  Future<void> _showStreamUrlDialog(BuildContext context, bool isTv) async {
     final l10n = AppLocalizations.of(context)!;
-    final controller = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        surfaceTintColor: Colors.transparent,
-        title: Text(l10n.streamUrl),
-        content: CustomTextField(
-          controller: controller,
-          hintText: l10n.enterVideoUrlHint,
-          autofocus: false, // Start focus on Play button
-          textInputAction: TextInputAction.done,
+    final url = await TextInputDialog.show(
+      context,
+      title: l10n.streamUrl,
+      hintText: l10n.enterVideoUrlHint,
+      confirmLabel: l10n.play,
+      // Start focus on Play so a remote press acts immediately.
+      autofocusField: false,
+    );
+    if (url == null || url.isEmpty || !context.mounted) return;
+
+    String title = l10n.networkStream;
+    try {
+      final uri = Uri.parse(url);
+      if (uri.pathSegments.isNotEmpty) {
+        title = uri.pathSegments.last;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('DeveloperOptionsScreen: URI parse error: $e');
+      }
+    }
+
+    await PlayerRoute(
+      $extra: PlayerRouteExtra(
+        item: MultimediaItem(
+          title: title,
+          url: url, // Unique URL for history
+          posterUrl: '',
+          provider: l10n.remote,
+          episodes: [Episode(name: title, url: url, posterUrl: '')],
         ),
-        actions: [
-          CustomButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              l10n.cancel,
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          CustomButton(
-            autofocus: true,
-            isPrimary: true,
-
-            onPressed: () {
-              final url = controller.text.trim();
-              if (url.isNotEmpty) {
-                String title = l10n.networkStream;
-                try {
-                  final uri = Uri.parse(url);
-                  if (uri.pathSegments.isNotEmpty) {
-                    title = uri.pathSegments.last;
-                  }
-                } catch (e) {
-                  if (kDebugMode) {
-                    debugPrint('DeveloperOptionsScreen: URI parse error: $e');
-                  }
-                }
-
-                Navigator.pop(context);
-                PlayerRoute(
-                  $extra: PlayerRouteExtra(
-                    item: MultimediaItem(
-                      title: title,
-                      url: url, // Unique URL for history
-                      posterUrl: '',
-                      provider: l10n.remote,
-                      episodes: [Episode(name: title, url: url, posterUrl: '')],
-                    ),
-                    videoUrl: url,
-                  ),
-                ).push<void>(context);
-              }
-            },
-            child: Text(l10n.play),
-          ),
-        ],
+        videoUrl: url,
       ),
-    ).then((_) {
-      controller.dispose();
-    });
+    ).push<void>(context);
   }
 
   Future<void> _pickTorrentFile(BuildContext context) async {

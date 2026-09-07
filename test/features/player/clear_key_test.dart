@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:skystream/l10n/generated/app_localizations_en.dart';
 import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/features/player/domain/clear_key.dart';
 
@@ -49,8 +50,8 @@ void main() {
       expect(clearKeyFor(s(kid: kid)), isNull);
     });
 
-    // Fetching from a licence server is a request we do not make; claiming
-    // otherwise would show a black screen instead of an honest refusal.
+    // This one stays synchronous, so a key that lives on a licence server is
+    // out of its reach - fetchClearKey is what goes and asks.
     test('is null for licence-server DRM', () {
       expect(clearKeyFor(s(licenseUrl: 'https://drm.example/lic')), isNull);
     });
@@ -114,7 +115,7 @@ void main() {
 
     test('every obstacle has a non-empty explanation', () {
       for (final o in DrmObstacle.values) {
-        expect(describeDrmObstacle(o), isNotEmpty);
+        expect(describeDrmObstacle(AppLocalizationsEn(), o), isNotEmpty);
       }
     });
   });

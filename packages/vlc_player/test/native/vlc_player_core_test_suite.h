@@ -2,6 +2,7 @@
 #define VLC_PLAYER_TEST_NATIVE_VLC_PLAYER_CORE_TEST_SUITE_H_
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include "vlc_pixel_buffer_sink.h"
 #include "vlc_player_core.h"
 
 namespace vlc_player {
@@ -50,6 +52,92 @@ TEST(VlcPlayerCore, SnapshotEqualityComparesPayloadFields) {
   second = first;
   second.error_description = "failed";
   EXPECT_NE(first, second);
+
+  // A track switch must defeat the dedupe or the forced post-mutation
+  // snapshot would be swallowed as a repeat.
+  second = first;
+  second.audio_track = 2;
+  EXPECT_NE(first, second);
+
+  second = first;
+  second.subtitle_track = 0;
+  EXPECT_NE(first, second);
+
+  second = first;
+  second.track_revision = 1;
+  EXPECT_NE(first, second);
+}
+
+TEST(VlcPlayerCore, SnapshotWithoutMediaReportsNoActiveTracks) {
+  auto core = MakeCore();
+
+  ASSERT_TRUE(core->is_valid()) << core->error();
+  const VlcSnapshot snapshot = core->Snapshot();
+
+  EXPECT_EQ(snapshot.audio_track, -1);
+  EXPECT_EQ(snapshot.subtitle_track, -1);
+  EXPECT_EQ(snapshot.track_revision, 0);
+}
+
+// The revision Snapshot() publishes is derived from this fingerprint, and the
+// whole point of a fingerprint over the count it replaced is that a swap which
+// keeps the list the same size still moves it. A live/adaptive stream does
+// exactly that on a rendition change or an MPEG-TS PMT update; a consumer
+// caching the track lists off the revision would otherwise keep drawing the
+// old names with nothing ticked, because the active id it matches is gone.
+TEST(VlcPlayerCore, TrackSetFingerprintMovesOnASameSizeSwap) {
+  const std::vector<VlcTrackDescription> audio_before = {
+      {1, "English", ""},
+      {2, "Hindi", ""},
+  };
+  const std::vector<VlcTrackDescription> spu = {{-1, "Disable", ""}};
+
+  const int64_t before =
+      VlcPlayerCore::TrackSetFingerprint(audio_before, spu);
+
+  // Same two tracks, same count: nothing at all may move.
+  EXPECT_EQ(VlcPlayerCore::TrackSetFingerprint(audio_before, spu), before);
+
+  // Two tracks still, but they are different elementary streams.
+  const std::vector<VlcTrackDescription> swapped_ids = {
+      {3, "English", ""},
+      {4, "Hindi", ""},
+  };
+  EXPECT_NE(VlcPlayerCore::TrackSetFingerprint(swapped_ids, spu), before);
+
+  // Same ids, renamed: still a different list to show the viewer.
+  const std::vector<VlcTrackDescription> swapped_names = {
+      {1, "English commentary", ""},
+      {2, "Hindi", ""},
+  };
+  EXPECT_NE(VlcPlayerCore::TrackSetFingerprint(swapped_names, spu), before);
+
+  // Reordered, so the count and the id multiset both survive.
+  const std::vector<VlcTrackDescription> reordered = {
+      {2, "Hindi", ""},
+      {1, "English", ""},
+  };
+  EXPECT_NE(VlcPlayerCore::TrackSetFingerprint(reordered, spu), before);
+}
+
+TEST(VlcPlayerCore, TrackSetFingerprintKeepsTheTwoListsApart) {
+  const std::vector<VlcTrackDescription> track = {{7, "Commentary", ""}};
+
+  // The audio and spu lists are read from different libVLC vars and are
+  // published separately, so an id that moves between them is a real change
+  // even though the concatenation of the two lists did not.
+  EXPECT_NE(VlcPlayerCore::TrackSetFingerprint(track, {}),
+            VlcPlayerCore::TrackSetFingerprint({}, track));
+
+  // And the empty set has to be reachable and stable, since that is what a
+  // media with no audio and no subtitles fingerprints to.
+  EXPECT_EQ(VlcPlayerCore::TrackSetFingerprint({}, {}),
+            VlcPlayerCore::TrackSetFingerprint({}, {}));
+
+  // -1 is the "nothing seen yet" sentinel Snapshot() compares against, so no
+  // real track set may ever produce it.
+  EXPECT_GE(VlcPlayerCore::TrackSetFingerprint({}, {}), 0);
+  EXPECT_GE(VlcPlayerCore::TrackSetFingerprint(track, track), 0);
 }
 
 TEST(VlcPlayerCore, RejectsEmptySourceUri) {
@@ -144,7 +232,7 @@ TEST(VlcPlayerCore, ResizeVideoBufferReusesUnchangedBuffers) {
   EXPECT_EQ(core->TextureGenerationForTesting(), 0u);
 }
 
-TEST(VlcPlayerCore, CopyPixelsCopiesOnlyNewRenderGenerations) {
+TEST(VlcPlayerCore, CopyPixelsPublishesOnlyNewRenderGenerations) {
   auto core = MakeCore();
   const uint8_t* buffer = nullptr;
   uint32_t width = 0;
@@ -173,6 +261,97 @@ TEST(VlcPlayerCore, CopyPixelsCopiesOnlyNewRenderGenerations) {
   EXPECT_EQ(buffer[0], 23u);
   EXPECT_EQ(core->TextureGenerationForTesting(),
             core->RenderGenerationForTesting());
+}
+
+TEST(VlcPixelBufferSink, CopyPixelsRotatesBuffersInsteadOfCopying) {
+  VlcPixelBufferSink sink([] {});
+  const uint8_t* first = nullptr;
+  const uint8_t* second = nullptr;
+  const uint8_t* third = nullptr;
+  uint32_t width = 0;
+  uint32_t height = 0;
+
+  sink.ResizeForTesting(2, 2, 8);
+
+  sink.SimulateFrameForTesting(17);
+  ASSERT_TRUE(sink.CopyPixels(&first, &width, &height));
+  sink.SimulateFrameForTesting(23);
+  ASSERT_TRUE(sink.CopyPixels(&second, &width, &height));
+  sink.SimulateFrameForTesting(29);
+  ASSERT_TRUE(sink.CopyPixels(&third, &width, &height));
+
+  // A stable address would mean the frame was memcpy'd into a fixed buffer
+  // rather than rotated, which is megabytes of traffic every frame.
+  EXPECT_NE(first, second);
+  EXPECT_NE(second, third);
+  EXPECT_NE(first, third);
+  EXPECT_EQ(second[0], 23u);
+  EXPECT_EQ(third[0], 29u);
+
+  // Rotation must never hand the embedder the buffer libVLC is about to
+  // write into - that is the invariant the third buffer exists to keep.
+  EXPECT_NE(third, sink.FrameBufferDataForTesting());
+
+  const uint8_t* repeat = nullptr;
+  ASSERT_TRUE(sink.CopyPixels(&repeat, &width, &height));
+  EXPECT_EQ(repeat, third);
+}
+
+// A detach between libVLC's lock and unlock callbacks skips Release. That
+// must cost a frame and nothing more: when Acquire held the mutex until
+// Release, the skip left it locked forever and the next CopyPixels - on the
+// raster thread - hung the window.
+TEST(VlcPixelBufferSink, AnAcquireWithNoReleaseDoesNotStrandTheMutex) {
+  VlcPixelBufferSink sink([] {});
+  sink.ResizeForTesting(4, 4, 16);
+  sink.SimulateFrameForTesting(11);
+
+  void* planes[1] = {nullptr};
+  ASSERT_NE(sink.Acquire(planes), nullptr);
+  // Deliberately no Release, exactly as UnlockCallback does after a Detach.
+
+  const uint8_t* pixels = nullptr;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  EXPECT_TRUE(sink.CopyPixels(&pixels, &width, &height));
+  EXPECT_EQ(pixels[0], 11u);
+
+  uint32_t w = 0;
+  uint32_t h = 0;
+  sink.FrameSize(&w, &h);
+  EXPECT_EQ(w, 4u);
+}
+
+TEST(VlcPixelBufferSink, ConfigureRequestsRgbaAndSizesTheBuffers) {
+  VlcPixelBufferSink sink([] {});
+  VlcFrameFormat format;
+  std::memcpy(format.chroma, "I420", 5);
+  format.width = 4;
+  format.height = 3;
+
+  EXPECT_EQ(sink.Configure(&format), 1u);
+
+  EXPECT_STREQ(format.chroma, "RGBA");
+  EXPECT_EQ(format.pitches[0], 16u);
+  EXPECT_EQ(format.lines[0], 3u);
+  EXPECT_EQ(sink.FrameBufferSizeForTesting(), 48u);
+
+  uint32_t width = 0;
+  uint32_t height = 0;
+  sink.FrameSize(&width, &height);
+  EXPECT_EQ(width, 4u);
+  EXPECT_EQ(height, 3u);
+}
+
+TEST(VlcPixelBufferSink, CommitNotifiesOnlyForRealPictures) {
+  int notifications = 0;
+  VlcPixelBufferSink sink([&notifications] { ++notifications; });
+
+  sink.Commit(nullptr);
+  EXPECT_EQ(notifications, 0);
+
+  sink.Commit(&sink);
+  EXPECT_EQ(notifications, 1);
 }
 
 TEST(VlcPlayerCore, DisposeIsIdempotentAndGuardsCommands) {

@@ -1,6 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../../../core/network/link_probe_service.dart';
+import '../../player/presentation/widgets/hotstar_player_style.dart';
+
+/// Accent shared with the player chrome, so a source card's Play button and
+/// the controls it launches read as one product. Both sheets use this instead
+/// of re-declaring the literal.
+const Color sourceSheetAccent = HotstarPlayerStyle.accent;
 
 /// Why a sources sheet was opened. Both actions stay on every row; the mode
 /// only decides the default tap action and the initial filtering.
@@ -134,53 +141,162 @@ class ProbeBadge extends StatelessWidget {
   }
 }
 
-/// Title block shared by the sources sheets.
-class SourceSheetHeader extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final Widget? trailing;
+/// Wraps the Play / Download row of a source card.
+///
+/// **Focus.** The cards are the UP/DOWN stops; the buttons are reached with
+/// LEFT/RIGHT once a card holds focus. Because the row sits at the bottom edge
+/// of the card, from a neighbouring card those buttons pass Flutter's
+/// directional filter (`centre.dy <= target.top` going up) and then win on
+/// distance against the card they belong to — UP from card 3 lands on card 2's
+/// Play button instead of card 2. Making the row untraversable unless
+/// [cardFocusNode] holds focus keeps other cards' buttons out of the
+/// candidate set entirely, while the focused card's own buttons stay in it so
+/// LEFT/RIGHT (and Tab on desktop) resolve natively between them.
+///
+/// The buttons stay *focusable* the whole time — only traversal is gated — so
+/// a card's key handler can still call `requestFocus()` on them directly.
+///
+/// **Hit target.** The chips paint at ~26dp so the cards keep their height;
+/// [_TapTargetBand] widens the band that accepts pointers to
+/// [kMinInteractiveDimension] without changing what is laid out or painted.
+class SourceCardActions extends StatefulWidget {
+  /// The focus node of the card this row belongs to. It must be an ancestor of
+  /// the row, which is how a focused button keeps the card "in focus".
+  final FocusNode cardFocusNode;
+  final Widget child;
 
-  const SourceSheetHeader({
+  const SourceCardActions({
     super.key,
-    required this.title,
-    required this.subtitle,
-    this.trailing,
+    required this.cardFocusNode,
+    required this.child,
+  });
+
+  @override
+  State<SourceCardActions> createState() => _SourceCardActionsState();
+}
+
+class _SourceCardActionsState extends State<SourceCardActions> {
+  late bool _cardHasFocus = widget.cardFocusNode.hasFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.cardFocusNode.addListener(_handleCardFocusChange);
+  }
+
+  @override
+  void didUpdateWidget(SourceCardActions oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.cardFocusNode, widget.cardFocusNode)) {
+      oldWidget.cardFocusNode.removeListener(_handleCardFocusChange);
+      widget.cardFocusNode.addListener(_handleCardFocusChange);
+      _cardHasFocus = widget.cardFocusNode.hasFocus;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.cardFocusNode.removeListener(_handleCardFocusChange);
+    super.dispose();
+  }
+
+  void _handleCardFocusChange() {
+    final hasFocus = widget.cardFocusNode.hasFocus;
+    if (hasFocus != _cardHasFocus && mounted) {
+      setState(() => _cardHasFocus = hasFocus);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // The band has to be the outermost box: [Focus] wraps its child in a
+    // [Semantics] proxy, and a proxy's bounds check would reject the pointer
+    // before it ever reached the band.
+    return _TapTargetBand(
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        descendantsAreTraversable: _cardHasFocus,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+/// Gives a hand-built action chip the button role assistive tech expects.
+///
+/// The chips are bare [InkWell]s — and a plain [Container] when disabled — so
+/// nothing in the subtree reports a role or a disabled state on its own. The
+/// chip's own [Text] supplies the label unless [label] overrides it.
+class SourceActionSemantics extends StatelessWidget {
+  final bool enabled;
+  final String? label;
+  final Widget child;
+
+  const SourceActionSemantics({
+    super.key,
+    required this.enabled,
+    this.label,
+    required this.child,
   });
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      child: child,
+    );
+  }
+}
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          ?trailing,
-        ],
-      ),
+/// Accepts pointers within [kMinInteractiveDimension] of its child's centre
+/// line, folding a near miss onto the row so it reaches whichever chip is
+/// under the finger.
+///
+/// Layout and painting are untouched: a taller box here would push every card
+/// taller, and a hit area cannot extend past an ancestor's bounds, so the
+/// growth has to happen at the row rather than around each chip.
+///
+/// That ancestor rule also makes the band ASYMMETRIC in practice. The action
+/// row is the last child of the card's Column, so a pointer below it is
+/// already outside the Column and is rejected before it reaches here; only the
+/// upward half is live. A tap in the gap below the chips therefore falls
+/// through to the card itself, which is the intended behaviour for Play and a
+/// known rough edge for Download. The maths below stays symmetric because it
+/// is the correct general rule, not because both halves fire here.
+class _TapTargetBand extends SingleChildRenderObjectWidget {
+  const _TapTargetBand({required Widget super.child});
+
+  @override
+  _RenderTapTargetBand createRenderObject(BuildContext context) =>
+      _RenderTapTargetBand();
+}
+
+class _RenderTapTargetBand extends RenderProxyBox {
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    if (super.hitTest(result, position: position)) return true;
+
+    final RenderBox? child = this.child;
+    if (child == null) return false;
+
+    final overhang = (kMinInteractiveDimension - size.height) / 2;
+    if (overhang <= 0) return false;
+    if (position.dx < 0 || position.dx > size.width) return false;
+    if (position.dy < -overhang || position.dy > size.height + overhang) {
+      return false;
+    }
+
+    final folded = Offset(position.dx, size.height / 2);
+    return result.addWithRawTransform(
+      transform: MatrixUtils.forceToPoint(folded),
+      position: position,
+      hitTest: (BoxHitTestResult result, Offset position) {
+        assert(position == folded);
+        return child.hitTest(result, position: folded);
+      },
     );
   }
 }
@@ -193,3 +309,4 @@ String extensionForUrl(String url) {
   }
   return '.mp4';
 }
+

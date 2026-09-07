@@ -254,31 +254,35 @@ class SyncedProgressCard extends ConsumerWidget {
               child: Material(
                 color: Colors.black.withValues(alpha: 0.6),
                 borderRadius: BorderRadius.circular(12),
-                child: InkWell(
-                  focusNode: FocusNode(
-                    canRequestFocus: false,
-                    skipTraversal: true,
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: () async {
-                    final manager = ref.read(syncManagerProvider);
-                    final success = await manager.removePlaybackProgress(item);
-                    if (success && context.mounted) {
-                      ref.invalidate(syncedProgressProvider);
-                      ref
-                          .read(notificationServiceProvider)
-                          .showSuccess(
-                            AppLocalizations.of(
-                              context,
-                            )!.removedFromHistory(item.title),
-                            title: 'Watch Progress',
-                            icon: Icons.history_rounded,
-                          );
-                    }
-                  },
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.close, size: 16, color: Colors.white70),
+                // ExcludeFocus rather than a FocusNode built inline: a node
+                // created in build() is a new listenable every rebuild that
+                // nothing ever disposes. The intent - keep this tap target
+                // out of D-pad traversal - needs no node at all.
+                child: ExcludeFocus(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () async {
+                      final manager = ref.read(syncManagerProvider);
+                      final success = await manager.removePlaybackProgress(
+                        item,
+                      );
+                      if (success && context.mounted) {
+                        ref.invalidate(syncedProgressProvider);
+                        ref
+                            .read(notificationServiceProvider)
+                            .showSuccess(
+                              AppLocalizations.of(
+                                context,
+                              )!.removedFromHistory(item.title),
+                              title: 'Watch Progress',
+                              icon: Icons.history_rounded,
+                            );
+                      }
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(Icons.close, size: 16, color: Colors.white70),
+                    ),
                   ),
                 ),
               ),

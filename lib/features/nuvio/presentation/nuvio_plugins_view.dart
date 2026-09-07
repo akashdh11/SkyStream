@@ -11,6 +11,7 @@ import '../../../core/nuvio/models/nuvio_models.dart';
 import '../../../core/utils/layout_constants.dart';
 import '../../../shared/widgets/custom_widgets.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../../../shared/widgets/text_input_dialog.dart';
 import 'nuvio_scraper_settings_dialog.dart';
 
 /// Manage Nuvio-format plugin repositories.
@@ -27,64 +28,14 @@ class _NuvioPluginsViewState extends ConsumerState<NuvioPluginsView> {
 
   Future<void> _addRepository() async {
     final messenger = ScaffoldMessenger.of(context);
-    final controller = TextEditingController();
-    final url = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        surfaceTintColor: Colors.transparent,
-        title: const Text('Add Nuvio Repository'),
-        content: SizedBox(
-          width: 480,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Paste the plugin manifest URL (the JSON listing "scrapers"). A bare host works too.',
-                style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: LayoutConstants.spacingMd),
-              CustomTextField(
-                controller: controller,
-                hintText: 'https://example.com/plugins/manifest.json',
-                autofocus: true,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (value) {
-                  if (value.isNotEmpty) {
-                    Navigator.pop(dialogContext, value.trim());
-                  }
-                },
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          CustomButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(
-              'Cancel',
-              style: TextStyle(
-                color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          const SizedBox(width: LayoutConstants.spacingXs),
-          CustomButton(
-            isPrimary: true,
-            onPressed: () {
-              if (controller.text.trim().isNotEmpty) {
-                Navigator.pop(dialogContext, controller.text.trim());
-              }
-            },
-            child: const Text('Add'),
-          ),
-        ],
-      ),
+    final url = await TextInputDialog.show(
+      context,
+      title: 'Add Nuvio Repository',
+      message: 'Paste the plugin manifest URL (the JSON listing "scrapers"). A bare host works too.',
+      hintText: 'https://example.com/plugins/manifest.json',
+      confirmLabel: 'Add',
+      width: 480,
     );
-    
-    controller.dispose();
 
     if (url == null || url.isEmpty) return;
 

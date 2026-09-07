@@ -269,6 +269,23 @@ if (stats.isAvailable) {
 Track selection methods use native VLC track ids returned by
 `getAudioTracks()` and `getSubtitleTracks()`.
 
+The active selection is part of the value, not a separate call:
+`value.activeAudioTrackId` and `value.activeSubtitleTrackId` carry the id the
+engine is currently using (`null` when there is none, or subtitles are off), and
+`value.trackRevision` moves whenever the track *set* changes - a good moment
+to refetch the lists, and the only reliable signal that an `addSubtitle` has
+landed (see [VlcPlayerController](#vlcplayercontroller)).
+
+```dart
+ValueListenableBuilder<VlcPlayerValue>(
+  valueListenable: controller,
+  builder: (context, value, child) {
+    final active = value.activeSubtitleTrackId;
+    return Text(active == null ? 'Subtitles off' : 'Subtitle track $active');
+  },
+)
+```
+
 ### Listen for state changes
 
 `VlcPlayerController` extends `ValueNotifier<VlcPlayerValue>`.
@@ -391,6 +408,28 @@ Track, subtitle, and media information methods:
 non-negative position. `setPlaybackSpeed()` requires a finite value greater
 than zero.
 
+Every track mutation (`setAudioTrack`, `setSubtitleTrack`, `disableSubtitle`,
+`addSubtitle`) and every `seekTo` is followed by a fresh `VlcPlayerValue` on
+all five backends, and a change in `activeAudioTrackId`,
+`activeSubtitleTrackId` or `trackRevision` is never held back by
+`eventThrottleInterval`.
+
+For the three *selection* mutations that snapshot carries the result: choosing
+a track is a synchronous write on the player that reads straight back on every
+backend that was checked, so `activeAudioTrackId` / `activeSubtitleTrackId`
+are already correct in it. Should an engine ever report the previous id there,
+the next time tick corrects it - a late value, never a wrong one that sticks.
+
+`addSubtitle` is the exception, on all five backends. libVLC 3 posts an added
+slave to the input thread instead of applying it inline, so the snapshot that
+immediately follows the call still describes the pre-add track list, and the
+future completing means "the engine accepted the slave", not "the track is in
+the list now". The side-car appears when the engine announces the new
+elementary stream - `.esAdded` on macOS and iOS, `MediaPlayer.Event.ESAdded`
+on Android, the next 500 ms poll on Windows and Linux - which moves
+`trackRevision`. Refetch the lists from a `trackRevision` change; do not
+refetch them synchronously after `await controller.addSubtitle(...)`.
+
 ### VlcMediaSource
 
 `VlcMediaSource` describes one media item before it is passed to VLC.
@@ -426,6 +465,17 @@ Fields:
 - `playbackSpeed`
 - `audioDelay`
 - `subtitleDelay`
+- `activeAudioTrackId` - the native id of the audio track in use, or `null`
+  when there is none. libVLC's `-1` is normalised to `null`; `0` is a real id.
+- `activeSubtitleTrackId` - the native id of the subtitle track being rendered,
+  or `null` when subtitles are off.
+- `trackRevision` - a per-player counter that increases whenever the audio +
+  subtitle track *set* changes, not merely when its size does: macOS, iOS,
+  Windows and Linux hash the ids and names of both lists into every snapshot,
+  so a same-size swap (an adaptive rendition change, an MPEG-TS PMT update) is
+  caught too, while Android bumps on an audio or subtitle `ESAdded` /
+  `ESDeleted` and deliberately not on a video-only one. Refetch the track
+  lists when it moves - including after `addSubtitle`, which only lands here.
 - `isReady`
 - `isSeekable`
 - `isLive`

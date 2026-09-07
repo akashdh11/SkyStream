@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart'
+    show AppLifecycleListener, AppLifecycleState, WidgetsBinding;
 
 import 'vlc_media_info.dart';
 import 'vlc_http_headers.dart';
@@ -47,12 +49,17 @@ abstract class VlcPlayerController extends ValueNotifier<VlcPlayerValue> {
     VlcPlayerConfig? config,
     List<String> options = const <String>[],
     Duration? eventThrottleInterval,
+    Duration stallIndicatorDelay = const Duration(milliseconds: 1000),
   }) {
     return _VlcPlayerController(
       mediaSource: mediaSource,
       autoPlay: autoPlay,
       options: <String>[...?config?.toOptions(), ...options],
       eventThrottleInterval: eventThrottleInterval,
+      stallIndicatorDelay: stallIndicatorDelay,
+      // The nullable value, not the resolved one: the platform default is
+      // read at the moment it is needed so a const config cannot freeze it.
+      configuredBackgroundPolicy: config?.backgroundPolicy,
     );
   }
 
@@ -73,6 +80,26 @@ abstract class VlcPlayerController extends ValueNotifier<VlcPlayerValue> {
   /// still notify listeners immediately. The default `null` keeps every
   /// distinct native value update visible immediately.
   Duration? get eventThrottleInterval;
+
+  /// How long the position clock may stand still on a playing player before
+  /// [VlcPlayerValue.isStalled] is raised.
+  ///
+  /// The default of one second is not a taste choice. The desktop backends
+  /// poll libVLC every 500 ms and the host may throttle events on top of that
+  /// ([eventThrottleInterval]), so two consecutive snapshots of healthy
+  /// playback can legitimately be up to poll-plus-throttle apart. A delay
+  /// shorter than that reads the gap between polls as a stall and flickers a
+  /// spinner over a video that is playing fine. Anything set here must stay
+  /// clear of that sum.
+  Duration get stallIndicatorDelay;
+
+  /// What the controller does with playback when the app leaves the
+  /// foreground, resolved against the platform default.
+  ///
+  /// Owned here rather than by the host screen so that every embedder of this
+  /// package gets the behaviour, and so the "resume only what the policy
+  /// paused" bookkeeping lives next to the state it reads.
+  VlcBackgroundPolicy get backgroundPolicy;
 
   /// Whether this controller is currently attached to a native player instance.
   bool get isAttached;
@@ -217,9 +244,17 @@ abstract class VlcPlayerController extends ValueNotifier<VlcPlayerValue> {
   /// Disables subtitle rendering for the current media.
   Future<void> disableSubtitle();
 
-  /// Adds and selects an external subtitle from [uri].
+  /// Asks the engine to add an external subtitle from [uri] and select it.
   ///
   /// [uri] can point to a local file or a remote subtitle URL supported by VLC.
+  ///
+  /// The future completing does NOT mean the track exists yet. Before
+  /// attachment the request is queued and replayed on attach; after it,
+  /// libVLC 3 hands the slave to the input thread, so the snapshot that
+  /// follows still describes the state from before the add on all five
+  /// backends. Wait for [VlcPlayerValue.trackRevision] to move, then re-read
+  /// [getSubtitleTracks]; do not treat a list read straight after this call as
+  /// authoritative.
   Future<void> addSubtitle(Uri uri);
 
   /// Returns metadata and discovered track details for the current media.
@@ -238,6 +273,8 @@ class _VlcPlayerController extends VlcPlayerController
     this.autoPlay = false,
     List<String> options = const <String>[],
     this.eventThrottleInterval,
+    required this.stallIndicatorDelay,
+    this.configuredBackgroundPolicy,
   }) : options = List<String>.unmodifiable(options),
        super._() {
     if (eventThrottleInterval case final interval? when interval.isNegative) {
@@ -245,6 +282,13 @@ class _VlcPlayerController extends VlcPlayerController
         eventThrottleInterval,
         'eventThrottleInterval',
         'Must not be negative.',
+      );
+    }
+    if (stallIndicatorDelay <= Duration.zero) {
+      throw ArgumentError.value(
+        stallIndicatorDelay,
+        'stallIndicatorDelay',
+        'Must be positive.',
       );
     }
     _pendingMediaSource = mediaSource;
@@ -259,6 +303,62 @@ class _VlcPlayerController extends VlcPlayerController
 
   @override
   final Duration? eventThrottleInterval;
+
+  @override
+  final Duration stallIndicatorDelay;
+
+  /// The host's stated preference, or null to follow the platform.
+  final VlcBackgroundPolicy? configuredBackgroundPolicy;
+
+  /// Created on first attach rather than in the constructor.
+  ///
+  /// [AppLifecycleListener] resolves `WidgetsBinding.instance` eagerly, and a
+  /// controller is legitimately built in a plain `flutter_test` `test()` with
+  /// no binding at all — configuring one is not the same as playing anything.
+  /// There is also nothing to pause before a native player exists.
+  AppLifecycleListener? _lifecycleListener;
+
+  /// Whether [backgroundPolicy] is what paused the current playback.
+  ///
+  /// The whole point of the flag: a viewer who paused by hand and then pressed
+  /// Home must come back to a paused player. Resuming unconditionally is the
+  /// bug this exists to prevent.
+  bool _pausedForBackground = false;
+
+  /// Whether the CURRENT media has actually reached playback.
+  ///
+  /// [VlcPlayerValue] merges into its predecessor, so straight after
+  /// `setMedia` `value.position` still describes the media before it. This is
+  /// the flag that tells the two apart, and it is what makes a re-attach able
+  /// to trust the live position - see [_mediaForAttach].
+  bool _hasPlayedSinceMedia = false;
+
+  /// Whether an audio interruption is what paused the current playback, and
+  /// whether it promised to end.
+  ///
+  /// Set only for [VlcAudioInterruption.focusLostTransient]: a call comes
+  /// back, a permanent loss and a yanked pair of headphones do not.
+  ///
+  /// Tracked apart from [_pausedForBackground] rather than folded into it,
+  /// because the two are settled by different events and the interleaving that
+  /// matters gets it wrong otherwise. A call arriving and then the call UI
+  /// pushing the app away leaves only this one set — the policy stakes its
+  /// claim on a player it found playing, and an interrupted player is already
+  /// paused — so when focus returns to a backgrounded app, the claim is handed
+  /// over deliberately in [_applyInterruption] instead of being assumed.
+  ///
+  /// Both being set at once is harmless where it can happen, and neither
+  /// resume can escape the native focus request: a play that the system
+  /// refuses does not start anything, it comes straight back as another
+  /// interruption.
+  bool _pausedForAudioFocus = false;
+
+  /// Whether the app is currently in the background.
+  ///
+  /// Distinct from [_pausedForBackground], which only records that the policy
+  /// paused something. Media can be opened while the app is away - a cold
+  /// magnet resolves for minutes - and that open must not start making noise.
+  bool _backgrounded = false;
 
   int? _viewId;
   int? _textureId;
@@ -279,7 +379,24 @@ class _VlcPlayerController extends VlcPlayerController
   StreamSubscription<Object?>? _eventsSubscription;
   Timer? _eventThrottleTimer;
   VlcPlayerValue? _pendingThrottledValue;
+
+  /// Counts down [stallIndicatorDelay] from the first snapshot whose position
+  /// matched the one before it. Armed only while the engine claims to be
+  /// running, and disarmed by any movement of the clock.
+  Timer? _stallTimer;
+
+  /// The position of the last native snapshot, throttled or not.
+  ///
+  /// Kept apart from `value.position` on purpose: under [eventThrottleInterval]
+  /// the published position lags the engine by up to an interval, and a stall
+  /// judged against it would see a frozen clock at every flush.
+  Duration? _lastNativePosition;
   bool _isDisposed = false;
+
+  @override
+  VlcBackgroundPolicy get backgroundPolicy =>
+      configuredBackgroundPolicy ??
+      VlcPlayerConfig.platformDefaultBackgroundPolicy;
 
   @override
   bool get isAttached => _viewId != null;
@@ -322,6 +439,7 @@ class _VlcPlayerController extends VlcPlayerController
     await _eventsSubscription?.cancel();
     _eventsSubscription = null;
     _cancelPendingThrottledValue();
+    _cancelStallTimer();
     if (oldViewId != null) {
       await _disposeNativeView(oldViewId);
     }
@@ -334,10 +452,14 @@ class _VlcPlayerController extends VlcPlayerController
     _eventsSubscription = EventChannel(
       'vlc_player/events/$viewId',
     ).receiveBroadcastStream().listen(_handleEvent, onError: _handleEventError);
+    _ensureLifecycleListener();
 
     final pendingMediaSource = _pendingMediaSource;
     if (pendingMediaSource != null) {
-      await _setMedia(pendingMediaSource, autoPlay: _pendingAutoPlay);
+      await _setMedia(
+        _mediaForAttach(pendingMediaSource),
+        autoPlay: _pendingAutoPlay,
+      );
       _ensureNotDisposed();
     }
     await _flushPendingSubtitles();
@@ -360,6 +482,7 @@ class _VlcPlayerController extends VlcPlayerController
     await _eventsSubscription?.cancel();
     _eventsSubscription = null;
     _cancelPendingThrottledValue();
+    _cancelStallTimer();
     if (oldViewId != null) {
       await _disposeNativeView(oldViewId);
     }
@@ -383,10 +506,14 @@ class _VlcPlayerController extends VlcPlayerController
     _eventsSubscription = EventChannel(
       'vlc_player/events/$viewId',
     ).receiveBroadcastStream().listen(_handleEvent, onError: _handleEventError);
+    _ensureLifecycleListener();
 
     final pendingMediaSource = _pendingMediaSource;
     if (pendingMediaSource != null) {
-      await _setMedia(pendingMediaSource, autoPlay: _pendingAutoPlay);
+      await _setMedia(
+        _mediaForAttach(pendingMediaSource),
+        autoPlay: _pendingAutoPlay,
+      );
       _ensureNotDisposed();
     }
     await _flushPendingSubtitles();
@@ -394,19 +521,155 @@ class _VlcPlayerController extends VlcPlayerController
     return textureId;
   }
 
+  /// The media to hand a freshly attached player.
+  ///
+  /// A *re*-attach — the same controller picking up a surface that was torn
+  /// down and rebuilt — would otherwise replay the source from the position it
+  /// was originally opened at, dropping a viewer an hour into a film back at
+  /// the start. The last position this controller saw is the honest answer.
+  ///
+  /// The configured start survives while nothing has played, which is the
+  /// first attach: that is exactly when [VlcMediaSource.startPosition] carries
+  /// a resume point and `value.position` is still zero.
+  VlcMediaSource _mediaForAttach(VlcMediaSource source) {
+    final position = value.position;
+    // Only a session that actually reached playback can improve on the
+    // configured start. Two traps this avoids: a viewer who rewound below
+    // their resume point would otherwise be thrown forward to it again, and a
+    // value sampled right after setMedia still carries the PREVIOUS media's
+    // position because VlcPlayerValue merges into its predecessor.
+    if (!_hasPlayedSinceMedia || position <= Duration.zero) {
+      return source;
+    }
+    return VlcMediaSource(
+      uri: source.uri,
+      httpHeaders: source.httpHeaders,
+      mediaOptions: source.mediaOptions,
+      startPosition: position,
+    );
+  }
+
   /// Detaches and disposes the native player instance, if one is attached.
+  ///
+  /// [viewId] names the view the caller believes it owns; a mismatch is a
+  /// no-op. Platform-view teardown is not ordered against creation — the
+  /// outgoing element's `dispose` can run after the incoming one has already
+  /// attached — so an unqualified call would null out a view that is playing.
+  /// Null means "whatever is attached", which is all the texture path can say:
+  /// it never learns the id.
   @override
   @internal
-  Future<void> detach() async {
-    final viewId = _viewId;
+  Future<void> detach({int? viewId}) async {
+    final attachedViewId = _viewId;
+    if (viewId != null && attachedViewId != viewId) {
+      return;
+    }
     _viewId = null;
     _textureId = null;
     await _eventsSubscription?.cancel();
     _eventsSubscription = null;
     _cancelPendingThrottledValue();
-    if (viewId != null) {
-      await _disposeNativeView(viewId);
+    _cancelStallTimer();
+    if (attachedViewId != null) {
+      await _disposeNativeView(attachedViewId);
     }
+  }
+
+  /// Starts watching the application lifecycle, once.
+  ///
+  /// The directional callbacks rather than `onStateChange`, deliberately.
+  /// `hidden` is passed through in both directions — leaving is
+  /// inactive → hidden and returning is paused → hidden — so a raw state
+  /// switch re-arms the background pause on the way back in and then resumes
+  /// a player the viewer had stopped by hand. [AppLifecycleListener] already
+  /// works out which way the app is travelling; taking its answer is cheaper
+  /// than keeping a second copy of the state machine here.
+  ///
+  /// `onInactive` is deliberately absent. On Android it is what entering
+  /// picture-in-picture looks like — the activity pauses while its window
+  /// stays on screen and playing — and on desktop it is merely a window that
+  /// lost focus.
+  void _ensureLifecycleListener() {
+    // AppLifecycleListener only reports transitions, so a controller attached
+    // while the app is already away would never learn it. Seed from the
+    // binding's current answer before subscribing.
+    final current = WidgetsBinding.instance.lifecycleState;
+    _backgrounded =
+        current == AppLifecycleState.paused ||
+        current == AppLifecycleState.hidden ||
+        current == AppLifecycleState.detached;
+    _lifecycleListener ??= AppLifecycleListener(
+      onHide: _pauseForBackground,
+      onPause: _pauseForBackground,
+      onResume: _resumeFromBackground,
+    );
+  }
+
+  void _pauseForBackground() {
+    if (_isDisposed) return;
+    // Recorded even when there is nothing to pause yet. Resolution can outlast
+    // the app going away, and the open that follows has to know.
+    _backgrounded = true;
+    if (backgroundPolicy != VlcBackgroundPolicy.pause ||
+        _pausedForBackground ||
+        _viewId == null ||
+        !value.isPlaying) {
+      return;
+    }
+    _pausedForBackground = true;
+    // Not the public pause(): that one is the user's, and clears the flag this
+    // just set. Failures are swallowed because a player that has already gone
+    // away has, for this purpose, done what was asked.
+    unawaited(_invoke('pause').catchError((Object _) {}));
+  }
+
+  void _resumeFromBackground() {
+    if (_isDisposed) return;
+    _backgrounded = false;
+    if (!_pausedForBackground) return;
+    _pausedForBackground = false;
+    if (_viewId == null) {
+      return;
+    }
+    unawaited(_invoke('play').catchError((Object _) {}));
+  }
+
+  /// Mirrors a native audio interruption into this controller's bookkeeping.
+  ///
+  /// The engine is already paused, ducked or restored by the time this runs:
+  /// audio focus has to be honoured in the instant it moves, not a channel
+  /// round trip later. What the native side cannot answer is who owns the
+  /// resume, because that depends on the app lifecycle and on
+  /// [backgroundPolicy], both of which live here. So it reports, and this
+  /// decides.
+  ///
+  /// Never through the public [play] and [pause]: those mean "the viewer
+  /// decided" and clear [_pausedForBackground]. A phone call is not a
+  /// decision the viewer made.
+  void _applyInterruption(
+    VlcAudioInterruption previous,
+    VlcAudioInterruption next,
+  ) {
+    if (_isDisposed || previous == next) return;
+
+    if (next != VlcAudioInterruption.none) {
+      _pausedForAudioFocus = next == VlcAudioInterruption.focusLostTransient;
+      return;
+    }
+
+    if (!_pausedForAudioFocus) return;
+    _pausedForAudioFocus = false;
+    if (_viewId == null) {
+      return;
+    }
+    if (_backgrounded && backgroundPolicy == VlcBackgroundPolicy.pause) {
+      // The call ended while the app is still away. Playing here is exactly
+      // the noise nobody asked for, so the claim is handed to the background
+      // policy and the trip back to the foreground settles it.
+      _pausedForBackground = true;
+      return;
+    }
+    unawaited(_invoke('play').catchError((Object _) {}));
   }
 
   @override
@@ -624,6 +887,21 @@ class _VlcPlayerController extends VlcPlayerController
     required bool autoPlay,
   }) async {
     _ensureNotDisposed();
+    // A fresh media has not played yet, whatever the merged value still says.
+    // The stall clock goes with it: the position it was watching belongs to
+    // the media on its way out, and the opening buffer of the new one is the
+    // startup spinner's job, not this one's.
+    _hasPlayedSinceMedia = false;
+    _cancelStallTimer();
+    // Opening while the app is away must not start audio nobody can stop:
+    // there is no notification and no lock-screen control behind this yet.
+    // The policy's claim is staked here so the return trip resumes it.
+    if (autoPlay &&
+        _backgrounded &&
+        backgroundPolicy == VlcBackgroundPolicy.pause) {
+      autoPlay = false;
+      _pausedForBackground = true;
+    }
     _pendingMediaSource = source;
     _pendingAutoPlay = autoPlay;
 
@@ -652,19 +930,73 @@ class _VlcPlayerController extends VlcPlayerController
     }
   }
 
+  // play/pause/stop are the deliberate-intent entry points — the on-screen
+  // button, a remote, and in due course the media session and the audio-focus
+  // handler. Any of them settles the background question on its own terms, so
+  // they clear the policy's claim on the next resume: a viewer who pressed
+  // play from a notification while the app was hidden has said what they want.
   @override
-  Future<void> play() => _invoke('play');
+  Future<void> play() {
+    // The background claim goes, because the viewer has settled the question
+    // the trip back to the foreground would otherwise answer.
+    //
+    // The audio-focus claim stays. "Play" and "resume when the call ends" are
+    // the same wish, and on Android a play made during a call is refused
+    // outright — that refusal comes back as an interruption, and the delayed
+    // grant that follows is the only thing that will ever start this playing.
+    _pausedForBackground = false;
+    return _invoke('play');
+  }
 
   @override
-  Future<void> pause() => _invoke('pause');
+  Future<void> pause() {
+    _clearAutomaticPauseClaims();
+    // A paused player is not stalled, it is paused. The flag itself is cleared
+    // by the paused snapshot when it arrives; what must not happen is the
+    // timer firing in the gap before it and painting a spinner over a still
+    // frame the viewer asked for.
+    _cancelStallTimer();
+    return _invoke('pause');
+  }
 
   @override
-  Future<void> stop() => _invoke('stop');
+  Future<void> stop() {
+    _clearAutomaticPauseClaims();
+    _cancelStallTimer();
+    return _invoke('stop');
+  }
+
+  /// Drops every claim that would otherwise start playback on its own.
+  ///
+  /// Asking for silence answers both questions at once: a viewer who pauses
+  /// while the app is hidden, or during a phone call, must not have the film
+  /// started again by the return trip or by the end of the call.
+  void _clearAutomaticPauseClaims() {
+    _pausedForBackground = false;
+    _pausedForAudioFocus = false;
+  }
 
   @override
   Future<void> seekTo(Duration position) {
     if (position.isNegative) {
       throw ArgumentError.value(position, 'position', 'Must be non-negative.');
+    }
+    // After a rebuffer, the gap between a seek and the first frame at the new
+    // position is the stall a viewer feels most, so the clock restarts here
+    // rather than waiting for a snapshot to notice nothing moved.
+    //
+    // The comparison baseline moves to the target as well. Every backend
+    // reports the requested time straight after a seek, before a frame has
+    // been decoded there; measured against the OLD position that report looks
+    // like movement and would disarm the timer, pushing the spinner out by a
+    // whole extra delay. This is a private baseline for the clock, never the
+    // published position - a viewer who scrubs still sees the engine's own
+    // position, and the host's resume point never records a place the engine
+    // did not reach.
+    _cancelStallTimer();
+    if (_isRunning((_pendingThrottledValue ?? value).state)) {
+      _lastNativePosition = position;
+      _armStallTimer();
     }
     return _invoke('seekTo', <String, Object?>{
       'position': position.inMilliseconds,
@@ -921,8 +1253,11 @@ class _VlcPlayerController extends VlcPlayerController
       return;
     }
     final previousValue = _pendingThrottledValue ?? value;
-    final nextValue = VlcPlayerValue.fromEvent(event, previousValue);
+    final nextValue = _observeStall(
+      VlcPlayerValue.fromEvent(event, previousValue),
+    );
     _setValueFromEvent(previousValue, nextValue);
+    _applyInterruption(previousValue.interruption, nextValue.interruption);
     if (_playlistAutoAdvance &&
         previousValue.state != VlcPlaybackState.ended &&
         nextValue.state == VlcPlaybackState.ended) {
@@ -975,6 +1310,7 @@ class _VlcPlayerController extends VlcPlayerController
 
   void _setPlayerError(VlcPlayerError playerError) {
     _cancelPendingThrottledValue();
+    _cancelStallTimer();
     value = value.copyWith(
       state: VlcPlaybackState.error,
       error: playerError,
@@ -1013,6 +1349,17 @@ class _VlcPlayerController extends VlcPlayerController
         previousValue.isReady == nextValue.isReady &&
         previousValue.isSeekable == nextValue.isSeekable &&
         previousValue.isLive == nextValue.isLive &&
+        // A stall flag changing is the whole event, not a progress tick that
+        // can wait for the next flush.
+        previousValue.isStalled == nextValue.isStalled &&
+        // Likewise a track switch or a track list changing shape: the panel
+        // that asked for it is waiting on this exact value, and it is not a
+        // progress tick.
+        previousValue.activeAudioTrackId == nextValue.activeAudioTrackId &&
+        previousValue.activeSubtitleTrackId ==
+            nextValue.activeSubtitleTrackId &&
+        previousValue.trackRevision == nextValue.trackRevision &&
+        previousValue.interruption == nextValue.interruption &&
         previousValue.videoSize == nextValue.videoSize &&
         previousValue.error == nextValue.error &&
         previousValue.errorDescription == nextValue.errorDescription;
@@ -1038,6 +1385,100 @@ class _VlcPlayerController extends VlcPlayerController
     _pendingThrottledValue = null;
   }
 
+  /// Reads the position clock in [next] and returns what should be published.
+  ///
+  /// Runs on every native snapshot, before the equality and throttle gates,
+  /// because a snapshot identical to the last one is precisely the evidence a
+  /// stall is made of - it must arm the timer even though it publishes
+  /// nothing.
+  ///
+  /// "Moved" rather than "advanced", deliberately: a seek backwards lands the
+  /// clock below where it was and a later snapshot from there is progress. A
+  /// strictly-greater test would hold the spinner up until playback overtook
+  /// the pre-seek position.
+  VlcPlayerValue _observeStall(VlcPlayerValue next) {
+    final moved = _lastNativePosition != next.position;
+    _lastNativePosition = next.position;
+    // Set here rather than on publish so that throttled progress ticks count:
+    // under an event throttle the first snapshot with a real position is
+    // usually coalesced, and a flag that only immediate publishes could set
+    // would leave a re-attach unable to trust the live position and this
+    // clock unable to arm at all.
+    if (next.position > Duration.zero) _hasPlayedSinceMedia = true;
+
+    if (!_isRunning(next.state)) {
+      // Paused, stopped, ended, error, opening: none of these is a stall, and
+      // the flag clears in this same publish rather than a frame later.
+      _cancelStallTimer();
+      return next.isStalled ? next.copyWith(isStalled: false) : next;
+    }
+    if (moved) {
+      // Movement clears the flag - and RESTARTS the countdown rather than
+      // cancelling it. Every native except Android suppresses a snapshot
+      // identical to the last one it sent, so a real freeze does not arrive
+      // as a repeated position: it arrives as silence. The only way to see
+      // that silence is a deadline measured from the last snapshot that
+      // moved. Gated the same way as the frozen path: a clock that has never
+      // run - a live stream, the pre-first-frame buffer - is not stalling.
+      if (_hasPlayedSinceMedia) {
+        _restartStallTimer();
+      } else {
+        _cancelStallTimer();
+      }
+      return next.isStalled ? next.copyWith(isStalled: false) : next;
+    }
+    // A clock that has not moved yet is not a stall: a live stream may never
+    // report movement, and before the first frame the startup buffer owns the
+    // spinner. Only a clock that once ran and has now stopped qualifies.
+    if (_hasPlayedSinceMedia) {
+      _armStallTimer();
+    }
+    return next;
+  }
+
+  /// Whether [state] claims the engine is producing frames, which is the only
+  /// claim a frozen clock can contradict.
+  static bool _isRunning(VlcPlaybackState state) {
+    return state == VlcPlaybackState.playing ||
+        state == VlcPlaybackState.buffering;
+  }
+
+  /// Starts the countdown if it is not already running. Never restarts it: on
+  /// a native that repeats a frozen position (Android), the stall began at the
+  /// first frozen snapshot, not the latest.
+  void _armStallTimer() {
+    _stallTimer ??= Timer(stallIndicatorDelay, _markStalled);
+  }
+
+  /// Restarts the countdown from now. Used on every moved snapshot, so that
+  /// the deadline always means "nothing has moved for stallIndicatorDelay" -
+  /// which is what a stall looks like on the natives that go silent.
+  void _restartStallTimer() {
+    _stallTimer?.cancel();
+    _stallTimer = Timer(stallIndicatorDelay, _markStalled);
+  }
+
+  void _cancelStallTimer() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
+  }
+
+  void _markStalled() {
+    _stallTimer = null;
+    if (_isDisposed) {
+      return;
+    }
+    // Both copies, or the next throttle flush overwrites the flag with the
+    // pre-stall snapshot it was holding.
+    final pending = _pendingThrottledValue;
+    if (pending != null) {
+      _pendingThrottledValue = pending.copyWith(isStalled: true);
+    }
+    if (!value.isStalled) {
+      value = value.copyWith(isStalled: true);
+    }
+  }
+
   void _ensureNotDisposed() {
     if (_isDisposed) {
       throw StateError('The controller has been disposed.');
@@ -1051,12 +1492,15 @@ class _VlcPlayerController extends VlcPlayerController
       return;
     }
     _isDisposed = true;
+    _lifecycleListener?.dispose();
+    _lifecycleListener = null;
     final viewId = _viewId;
     _viewId = null;
     _textureId = null;
     _eventsSubscription?.cancel();
     _eventsSubscription = null;
     _cancelPendingThrottledValue();
+    _cancelStallTimer();
     if (viewId != null) {
       unawaited(_disposeNativeView(viewId));
     }

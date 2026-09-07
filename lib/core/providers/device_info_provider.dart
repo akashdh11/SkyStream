@@ -80,6 +80,7 @@ Future<DeviceProfile> deviceProfile(Ref ref) async {
             : _tierFromRam(androidInfo.physicalRamSize);
       } else if (Platform.isIOS) {
         final iosInfo = await deviceInfo.iosInfo;
+        isTv = iosInfo.utsname.machine.startsWith('AppleTV') || iosInfo.model == 'Apple TV';
         physicalRamMb = iosInfo.physicalRamSize;
         tier = _tierFromRam(iosInfo.physicalRamSize);
       }

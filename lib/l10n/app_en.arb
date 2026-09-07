@@ -615,5 +615,384 @@
   "showResize": "Resize button",
   "showRotate": "Rotate button",
   "showPlaybackSpeed": "Playback speed button",
-  "showEpisodes": "Episodes button"
+  "showEpisodes": "Episodes button",
+  "playerNoProviderSelected": "No provider selected.",
+  "@playerNoProviderSelected": {
+    "description": "Playback cannot start because no extension is selected to resolve the link."
+  },
+  "playerNothingToPlay": "Nothing to play.",
+  "@playerNothingToPlay": {
+    "description": "Playback was requested with neither a link nor any already-resolved sources."
+  },
+  "playerCouldNotLoadSources": "Could not load sources: {error}",
+  "@playerCouldNotLoadSources": {
+    "description": "The extension threw while listing sources. {error} is the raw, untranslated plugin message.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "playerResolutionCancelled": "Cancelled.",
+  "@playerResolutionCancelled": {
+    "description": "Source resolution was abandoned because the viewer left the player before it finished."
+  },
+  "playerNoStreamsFound": "No streams found.",
+  "@playerNoStreamsFound": {
+    "description": "The extension answered, but with nothing playable for this title."
+  },
+  "playerDrmWidevine": "This channel uses Widevine DRM, which needs a licence module this player does not have.",
+  "@playerDrmWidevine": {
+    "description": "Why an encrypted stream will never open. Naming the scheme matters: Widevine is permanently out of reach."
+  },
+  "playerDrmPlayReady": "This channel uses PlayReady DRM, which needs a licence module this player does not have.",
+  "@playerDrmPlayReady": {
+    "description": "Why an encrypted stream will never open. Naming the scheme matters: PlayReady is permanently out of reach."
+  },
+  "playerDrmLicenceServer": "This channel needs a decryption key from a licence server, and the server did not provide a usable one.",
+  "@playerDrmLicenceServer": {
+    "description": "Why an encrypted stream will not open: the player did ask the licence server, and what came back was not a key it could use."
+  },
+  "playerDrmUnknown": "This channel is encrypted and no usable decryption key was provided.",
+  "@playerDrmUnknown": {
+    "description": "Why an encrypted stream will not open: it is encrypted but nothing says how, so no key can be found."
+  },
+  "playerPlaybackFailed": "Playback failed: {error}",
+  "@playerPlaybackFailed": {
+    "description": "A failure during setup that carries no better explanation. {error} is a raw, untranslated engine message.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "playerNoSourcesPlayable": "{count, plural, =1{The only source would not play.} other{None of the {count} sources would play.}}",
+  "@playerNoSourcesPlayable": {
+    "description": "Every candidate has been tried and failed, with no single reason worth naming. {count} is how many were tried.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "playerNoSourcesPlayableWithReason": "{count, plural, =1{The only source would not play - {reason}} other{None of the {count} sources would play - {reason}}}",
+  "@playerNoSourcesPlayableWithReason": {
+    "description": "Every candidate has been tried and failed. {reason} is why the last one gave up - one of the playerReason* or playerDrm* strings.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "playerPreparingTorrent": "Preparing torrent…",
+  "@playerPreparingTorrent": {
+    "description": "Progress note while a magnet is being seeded, before the engine has anything to open."
+  },
+  "playerReasonTorrentNotPrepared": "torrent could not be prepared",
+  "@playerReasonTorrentNotPrepared": {
+    "description": "Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonNoPlayableAddress": "source has no playable address",
+  "@playerReasonNoPlayableAddress": {
+    "description": "Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonLiveFeedDropped": "live feed dropped repeatedly",
+  "@playerReasonLiveFeedDropped": {
+    "description": "Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonStreamEndedEarly": "stream ended before its duration",
+  "@playerReasonStreamEndedEarly": {
+    "description": "Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonPlaybackError": "playback error",
+  "@playerReasonPlaybackError": {
+    "description": "Why one source gave up, when the engine reported a failure but described it in no way. A lowercase fragment, used like the other playerReason strings."
+  },
+  "playerReasonSourceStoppedResponding": "the source stopped responding",
+  "@playerReasonSourceStoppedResponding": {
+    "description": "Why one source gave up: it played and then went quiet. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonSourceNeverStarted": "the source never started",
+  "@playerReasonSourceNeverStarted": {
+    "description": "Why one source gave up: it never produced a frame at all. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonNetworkDropped": "the network dropped",
+  "@playerReasonNetworkDropped": {
+    "description": "Why one source gave up: the device lost connectivity while it was playing. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerReasonSkipped": "you skipped this source",
+  "@playerReasonSkipped": {
+    "description": "Why one source gave up: the viewer pressed Skip rather than wait for it to open. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerSkipSource": "Skip source",
+  "@playerSkipSource": {
+    "description": "Button that stops waiting on the source the player is opening and moves to the next candidate. Named for the source rather than just Skip, which on this screen already means Skip Intro."
+  },
+  "playerSourceReachable": "Reachable",
+  "@playerSourceReachable": {
+    "description": "Badge on a candidate whose health probe answered. Sits beside the existing trying and failed badges in the startup source list."
+  },
+  "playerReasonStreamEndedBeforePlaying": "stream ended before it played",
+  "@playerReasonStreamEndedBeforePlaying": {
+    "description": "Why one source gave up: the engine reported the end of the media without ever showing a frame. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason."
+  },
+  "playerFinished": "You've finished {title}",
+  "@playerFinished": {
+    "description": "Headline on the card that replaces the frozen last frame when playback runs out with nothing queued behind it: a film, the last episode of a series, or an episode whose automatic advance the viewer declined during the credits. Below it sit startOver and close, plus a next-episode action when one was declined.",
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "playerReconnecting": "Reconnecting…",
+  "@playerReconnecting": {
+    "description": "Status pill over a frame that has stopped moving, shown from the moment the player first re-issues its request to the source until the position moves again or the source is replaced. Also the opening line while a dropped live feed is being reopened."
+  },
+  "playerSpeedNormal": "Normal",
+  "@playerSpeedNormal": {
+    "description": "The 1x entry in the playback speed list, named rather than numbered."
+  },
+  "torrentStats": "Torrent stats",
+  "@torrentStats": {
+    "description": "Tooltip for the button that reveals peer and download figures for a torrent source."
+  },
+  "original": "Original",
+  "@original": {
+    "description": "Video fit mode that presents the picture at its native size. Sits alongside fit, zoom and stretch."
+  },
+  "playerCouldNotReadTracks": "Could not read tracks: {error}",
+  "@playerCouldNotReadTracks": {
+    "description": "The engine refused to list its audio and subtitle tracks. {error} is a raw, untranslated engine message.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "playerTrackNumber": "Track {id}",
+  "@playerTrackNumber": {
+    "description": "Fallback name for an audio or subtitle track the stream left unnamed. {id} is the engine's track number.",
+    "placeholders": {
+      "id": {
+        "type": "int"
+      }
+    }
+  },
+  "subtitleDelay": "Subtitle delay",
+  "@subtitleDelay": {
+    "description": "Label for the control that shifts subtitles earlier or later against the picture."
+  },
+  "playerSourceRestoredPrevious": "That source would not play. Restored the previous one.",
+  "@playerSourceRestoredPrevious": {
+    "description": "A source the viewer picked by hand failed, so the session it interrupted was put back. Shown as a brief notice over the video."
+  },
+  "playerTorrentFileNotReady": "That file is not ready to stream yet.",
+  "@playerTorrentFileNotReady": {
+    "description": "A file picked out of a torrent pack has no seeded bytes yet, so the torrent server cannot serve it."
+  },
+  "torrentFiles": "Torrent files",
+  "@torrentFiles": {
+    "description": "Tooltip for the button that lists the files inside the torrent being played, so another one can be opened."
+  },
+  "audio": "Audio",
+  "@audio": {
+    "description": "Section heading over the audio tracks in the track sheet. Sits above the subtitles heading."
+  },
+  "noAudioTracksReported": "No audio tracks reported",
+  "@noAudioTracksReported": {
+    "description": "The engine answered the track query with an empty audio list, which is not the same as the query failing."
+  },
+  "loadSubtitleFile": "Load subtitle file",
+  "@loadSubtitleFile": {
+    "description": "Opens the device file picker to add a subtitle from storage as a track."
+  },
+  "searchSubtitlesOnline": "Search online",
+  "@searchSubtitlesOnline": {
+    "description": "Opens the online subtitle search from the track sheet. Sits directly under loadSubtitleFile, hence the short wording."
+  },
+  "searchOnlineSubtitles": "Search online subtitles",
+  "@searchOnlineSubtitles": {
+    "description": "Label on the query field of the online subtitle search sheet."
+  },
+  "subtitleLanguage": "Subtitle language",
+  "@subtitleLanguage": {
+    "description": "Title of the dialog that picks which language the online subtitle search asks for."
+  },
+  "subtitleDownloadFailed": "That subtitle could not be downloaded. Try another result.",
+  "@subtitleDownloadFailed": {
+    "description": "A chosen search result could not be fetched or unpacked. The other results are still worth trying, so this says so."
+  },
+  "subtitleSearchFailed": "Search failed: {error}",
+  "@subtitleSearchFailed": {
+    "description": "The online subtitle search itself failed rather than one provider within it. {error} is a raw, untranslated message.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "subtitleSearchPrompt": "Search for a title to find subtitles for it.",
+  "@subtitleSearchPrompt": {
+    "description": "The online subtitle search has not been run yet, so there is nothing to list."
+  },
+  "noSubtitlesFoundTryAnother": "No subtitles found. Try a different title or language.",
+  "@noSubtitlesFoundTryAnother": {
+    "description": "The online subtitle search ran and matched nothing. Names both things worth changing, because the language filter is the usual culprit."
+  },
+  "seedsPeers": "Seeds / Peers",
+  "@seedsPeers": {
+    "description": "Label under the seed and peer counts on the torrent stats card, shown as \"12 / 34\"."
+  },
+  "subtitleAppearanceNote": "The engine draws subtitles, so it is handed these when playback starts — a change applies to the next video.",
+  "@subtitleAppearanceNote": {
+    "description": "Why the subtitle appearance settings do not alter a video that is already playing."
+  },
+  "textSize": "Text size",
+  "@textSize": {
+    "description": "The subtitle font size row, and the title of the dialog it opens."
+  },
+  "subtitleTextColour": "Text colour",
+  "@subtitleTextColour": {
+    "description": "The subtitle glyph colour row, and the title of the dialog it opens."
+  },
+  "resetSubtitleAppearance": "Reset subtitle appearance",
+  "@resetSubtitleAppearance": {
+    "description": "Puts size, colour and background back to what a fresh install uses."
+  },
+  "resetSubtitleAppearanceSubtitle": "Back to white text at size 22",
+  "@resetSubtitleAppearanceSubtitle": {
+    "description": "What resetSubtitleAppearance will actually do, named rather than left to be discovered."
+  },
+  "subtitlePreviewSample": "The quick brown fox",
+  "@subtitlePreviewSample": {
+    "description": "The caption drawn in the appearance preview. A pangram-style phrase in the reader's own script is worth more than a translation of this one."
+  },
+  "subtitleBackgroundSummary": "{color} · {percent}%",
+  "@subtitleBackgroundSummary": {
+    "description": "One-line summary of the subtitle background box. {color} is one of the color* strings, {percent} its opacity.",
+    "placeholders": {
+      "color": {
+        "type": "String"
+      },
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "opacityOff": "Opacity: off",
+  "@opacityOff": {
+    "description": "Zero opacity is the only way to get no background box at all, so it is spelled out rather than shown as 0%."
+  },
+  "opacityPercent": "Opacity: {percent}%",
+  "@opacityPercent": {
+    "description": "Live readout above the subtitle background opacity slider. {percent} is 0 to 100.",
+    "placeholders": {
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "colorWhite": "White",
+  "@colorWhite": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorYellow": "Yellow",
+  "@colorYellow": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorCyan": "Cyan",
+  "@colorCyan": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorGreen": "Green",
+  "@colorGreen": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorMagenta": "Magenta",
+  "@colorMagenta": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorRed": "Red",
+  "@colorRed": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorBlack": "Black",
+  "@colorBlack": {
+    "description": "A caption colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "colorDarkGrey": "Dark grey",
+  "@colorDarkGrey": {
+    "description": "A caption background colour the viewer can pick. Named, not shown as a hex value."
+  },
+  "playerNowPlaying": "Now playing",
+  "@playerNowPlaying": {
+    "description": "Marks the source row the player is actually on, in the side panel's Sources tab."
+  },
+  "playerQualityFilterDropped": "Nothing matched your quality preference, so every source is listed.",
+  "@playerQualityFilterDropped": {
+    "description": "Shown above the source list when the quality filter matched no source and was dropped."
+  },
+  "playerSeeders": "{count, plural, =1{1 seeder} other{{count} seeders}}",
+  "@playerSeeders": {
+    "description": "Seeder count badge on a torrent source row.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "playerFiles": "Files",
+  "@playerFiles": {
+    "description": "Side-panel tab listing the video files inside the torrent being played."
+  },
+  "playerSeasonEpisode": "S{season} E{episode}",
+  "@playerSeasonEpisode": {
+    "description": "Compact episode number for a series with seasons.",
+    "placeholders": {
+      "season": {
+        "type": "int"
+      },
+      "episode": {
+        "type": "int"
+      }
+    }
+  },
+  "playerEpisodeNumber": "E{episode}",
+  "@playerEpisodeNumber": {
+    "description": "Compact episode number where the series has no seasons.",
+    "placeholders": {
+      "episode": {
+        "type": "int"
+      }
+    }
+  },
+  "playerRuntimeMinutes": "{count} min",
+  "@playerRuntimeMinutes": {
+    "description": "Episode runtime, in minutes, on a side-panel episode row.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "audioDelay": "Audio delay",
+  "@audioDelay": {
+    "description": "Label for the stepper that shifts the audio track earlier or later against the picture. Sits beside subtitleDelay."
+  },
+  "subtitleSearchTitleFallback": "Nothing matched this title's ID. Showing title matches instead.",
+  "@subtitleSearchTitleFallback": {
+    "description": "Note above online subtitle results when the ID lookup returned nothing and the search fell back to matching the title text. Must not claim the ID was wrong: some providers answer an empty list when no key is configured."
+  },
+  "subtitleSearchSeasonFallback": "No subtitles for this episode. These are for the whole season, so check the episode number in the file name.",
+  "@subtitleSearchSeasonFallback": {
+    "description": "Note above online subtitle results when the episode-scoped search returned nothing and the search widened to the whole season. Distinct from subtitleSearchTitleFallback: it must warn that the list covers other episodes too, because the viewer has to pick their own episode's file by name, and it must not mention an ID (the season pass is reached with no ID in play)."
+  },
+  "subtitleAccountsNotConfigured": "No subtitle account is set up. Add an OpenSubtitles, SubDL or SubSource key in Settings to search online.",
+  "@subtitleAccountsNotConfigured": {
+    "description": "Empty state of the online subtitle search when no provider has credentials, so a search would silently return nothing. Points at the Settings screen where keys are added."
+  }
 }

@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/addons/data/addon_repository.dart';
 import '../../../../core/addons/data/debrid_service.dart';
 import '../../../../core/addons/models/addon_manifest.dart';
+import '../../../../shared/widgets/text_input_dialog.dart';
 
 /// One-tap starter add-ons: catalogs, streams and subtitles, so a fresh
 /// install can be useful in three taps.
@@ -106,69 +107,18 @@ class _AddonManageViewState extends ConsumerState<AddonManageView> {
   }
 
   Future<void> _showAddDialog() async {
-    final controller = TextEditingController();
-    final url = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Add an add-on'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Paste a manifest URL. stremio:// links and configured URLs '
-              '(with ?query settings) work too.',
-            ),
-            const SizedBox(height: 14),
-            Focus(
-              onKeyEvent: (node, event) {
-                if (event is KeyDownEvent &&
-                    event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                  node.nextFocus();
-                  return KeyEventResult.handled;
-                }
-                return KeyEventResult.ignored;
-              },
-              child: TextField(
-                controller: controller,
-                autofocus: true,
-                keyboardType: TextInputType.url,
-                decoration: InputDecoration(
-                  hintText: 'https://example.strem.io/manifest.json',
-                  border: const OutlineInputBorder(),
-                  suffixIcon: IconButton(
-                    tooltip: 'Paste',
-                    icon: const Icon(Icons.content_paste_rounded),
-                    onPressed: () async {
-                      final data = await Clipboard.getData('text/plain');
-                      final text = data?.text;
-                      if (text != null) controller.text = text.trim();
-                    },
-                  ),
-                ),
-                onSubmitted: (value) =>
-                    Navigator.pop(dialogContext, value.trim()),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          _DpadDialogButton(
-            label: 'Cancel',
-            onPressed: () => Navigator.pop(dialogContext),
-            isPrimary: false,
-          ),
-          _DpadDialogButton(
-            label: 'Install',
-            onPressed: () =>
-                Navigator.pop(dialogContext, controller.text.trim()),
-            isPrimary: true,
-          ),
-        ],
-      ),
+    final url = await TextInputDialog.show(
+      context,
+      title: 'Add an add-on',
+      message:
+          'Paste a manifest URL. stremio:// links and configured URLs '
+          '(with ?query settings) work too.',
+      hintText: 'https://example.strem.io/manifest.json',
+      keyboardType: TextInputType.url,
+      confirmLabel: 'Install',
+      showPasteButton: true,
+      allowEmpty: true,
     );
-
-    controller.dispose();
 
     if (url != null && url.isNotEmpty) await _install(url);
   }

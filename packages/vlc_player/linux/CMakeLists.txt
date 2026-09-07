@@ -16,9 +16,14 @@ set(PLUGIN_NAME "vlc_player_plugin")
 
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
+  "../src/native/vlc_frame_sink.h"
+  "../src/native/vlc_pixel_buffer_sink.cc"
+  "../src/native/vlc_pixel_buffer_sink.h"
   "../src/native/vlc_player_core.cc"
   "../src/native/vlc_player_core.h"
   "../src/native/vlc_player_types.h"
+  "../src/native/vlc_video_output.cc"
+  "../src/native/vlc_video_output.h"
   "vlc_player_plugin.cc"
 )
 
@@ -32,6 +37,9 @@ add_library(${PLUGIN_NAME} SHARED
 # application-level CMakeLists.txt. This can be removed for plugins that want
 # full control over build settings.
 apply_standard_settings(${PLUGIN_NAME})
+# vlc_player_core.cc calls std::clamp, so state the C++17 requirement here
+# rather than inheriting it from whatever floor the embedding app happens to
+# set in apply_standard_settings.
 target_compile_features(${PLUGIN_NAME} PUBLIC cxx_std_17)
 
 # Symbols are hidden by default to reduce the chance of accidental conflicts
@@ -93,6 +101,7 @@ add_executable(${TEST_RUNNER}
   ${PLUGIN_SOURCES}
 )
 apply_standard_settings(${TEST_RUNNER})
+# The test runner compiles ${PLUGIN_SOURCES} directly, so it needs C++17 too.
 target_compile_features(${TEST_RUNNER} PRIVATE cxx_std_17)
 target_compile_definitions(${TEST_RUNNER} PRIVATE VLC_PLAYER_TESTING)
 target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

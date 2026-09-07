@@ -18,10 +18,48 @@ void main() {
       expect(value.isReady, isFalse);
       expect(value.isSeekable, isFalse);
       expect(value.isLive, isFalse);
+      expect(value.isStalled, isFalse);
       expect(value.videoSize, isNull);
       expect(value.bufferingProgress, isNull);
       expect(value.error, isNull);
       expect(value.errorDescription, isNull);
+    });
+
+    test('isStalled takes part in equality and copyWith', () {
+      const running = VlcPlayerValue(state: VlcPlaybackState.playing);
+      final stalled = running.copyWith(isStalled: true);
+
+      expect(stalled.isStalled, isTrue);
+      expect(stalled, isNot(running));
+      expect(stalled.hashCode, isNot(running.hashCode));
+      expect(
+        stalled.copyWith(position: const Duration(seconds: 1)).isStalled,
+        isTrue,
+      );
+      expect(stalled.copyWith(isStalled: false), running);
+    });
+
+    test('fromEvent leaves isStalled to the previous value', () {
+      // No native backend can report a stall - libVLC 3 stays `playing`
+      // through a rebuffer - so the controller owns the flag and an event
+      // must neither set nor clear it, whatever keys it carries.
+      const stalled = VlcPlayerValue(
+        state: VlcPlaybackState.playing,
+        isStalled: true,
+      );
+      final next = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'playing',
+        'position': 5000,
+        'isStalled': false,
+      }, stalled);
+      expect(next.isStalled, isTrue);
+
+      final fromClear = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'playing',
+        'position': 5000,
+        'isStalled': true,
+      }, const VlcPlayerValue(state: VlcPlaybackState.playing));
+      expect(fromClear.isStalled, isFalse);
     });
 
     test('compares snapshots by value', () {
@@ -334,6 +372,136 @@ void main() {
     });
   });
 
+  group('active tracks and track revision', () {
+    const previous = VlcPlayerValue(
+      state: VlcPlaybackState.playing,
+      activeAudioTrackId: 2,
+      activeSubtitleTrackId: 5,
+      trackRevision: 4,
+    );
+
+    test('defaults are null ids and revision zero', () {
+      const value = VlcPlayerValue();
+      expect(value.activeAudioTrackId, isNull);
+      expect(value.activeSubtitleTrackId, isNull);
+      expect(value.trackRevision, 0);
+    });
+
+    test('fromEvent parses audioTrack and subtitleTrack ids', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'audioTrack': 2,
+        'subtitleTrack': 7,
+      }, const VlcPlayerValue());
+      expect(value.activeAudioTrackId, 2);
+      expect(value.activeSubtitleTrackId, 7);
+    });
+
+    test('zero is a legal track id, not "none"', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'audioTrack': 0,
+        'subtitleTrack': 0,
+      }, previous);
+      expect(value.activeAudioTrackId, 0);
+      expect(value.activeSubtitleTrackId, 0);
+    });
+
+    test('libVLC -1 is normalised to null and clears a previous id', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'audioTrack': -1,
+        'subtitleTrack': -1,
+      }, previous);
+      expect(value.activeAudioTrackId, isNull);
+      expect(value.activeSubtitleTrackId, isNull);
+    });
+
+    test('an absent key keeps the previous id and revision', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'playing',
+        'position': 1000,
+      }, previous);
+      expect(value.activeAudioTrackId, 2);
+      expect(value.activeSubtitleTrackId, 5);
+      expect(value.trackRevision, 4);
+    });
+
+    test('each id is independent of the other', () {
+      final audioOnly = VlcPlayerValue.fromEvent(<String, Object?>{
+        'audioTrack': 3,
+      }, previous);
+      expect(audioOnly.activeAudioTrackId, 3);
+      expect(audioOnly.activeSubtitleTrackId, 5);
+
+      final subtitleOff = VlcPlayerValue.fromEvent(<String, Object?>{
+        'subtitleTrack': -1,
+      }, previous);
+      expect(subtitleOff.activeAudioTrackId, 2);
+      expect(subtitleOff.activeSubtitleTrackId, isNull);
+    });
+
+    test('malformed ids are treated as none without throwing', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'audioTrack': 'two',
+        'subtitleTrack': double.nan,
+        'trackRevision': 'later',
+      }, previous);
+      expect(value.activeAudioTrackId, isNull);
+      expect(value.activeSubtitleTrackId, isNull);
+      expect(value.trackRevision, 4);
+    });
+
+    test('accepts numeric variants for ids and revision', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'audioTrack': 2.0,
+        'subtitleTrack': 1.0,
+        'trackRevision': 9.0,
+      }, const VlcPlayerValue());
+      expect(value.activeAudioTrackId, 2);
+      expect(value.activeSubtitleTrackId, 1);
+      expect(value.trackRevision, 9);
+    });
+
+    test('fromEvent parses trackRevision', () {
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'trackRevision': 3,
+      }, const VlcPlayerValue());
+      expect(value.trackRevision, 3);
+    });
+
+    test('take part in equality and hashCode', () {
+      const base = VlcPlayerValue(state: VlcPlaybackState.playing);
+      final audio = base.copyWith(activeAudioTrackId: 1);
+      final subtitle = base.copyWith(activeSubtitleTrackId: 1);
+      final revision = base.copyWith(trackRevision: 1);
+
+      expect(audio, isNot(equals(base)));
+      expect(subtitle, isNot(equals(base)));
+      expect(revision, isNot(equals(base)));
+      expect(audio, isNot(equals(subtitle)));
+      expect(subtitle.hashCode, isNot(equals(base.hashCode)));
+      expect(
+        base.copyWith(activeSubtitleTrackId: 1),
+        equals(base.copyWith(activeSubtitleTrackId: 1)),
+      );
+    });
+
+    test('copyWith keeps ids unless asked to clear them', () {
+      final kept = previous.copyWith(position: const Duration(seconds: 1));
+      expect(kept.activeAudioTrackId, 2);
+      expect(kept.activeSubtitleTrackId, 5);
+      expect(kept.trackRevision, 4);
+
+      final audioCleared = previous.copyWith(clearActiveAudioTrack: true);
+      expect(audioCleared.activeAudioTrackId, isNull);
+      expect(audioCleared.activeSubtitleTrackId, 5);
+
+      final subtitleCleared = previous.copyWith(clearActiveSubtitleTrack: true);
+      expect(subtitleCleared.activeAudioTrackId, 2);
+      expect(subtitleCleared.activeSubtitleTrackId, isNull);
+
+      expect(previous.copyWith(trackRevision: 6).trackRevision, 6);
+    });
+  });
+
   group('spurious buffering correction', () {
     // libVLC reports `buffering` throughout healthy playback on some builds -
     // VLCKit with isPlaying false, and Android emitting a Buffering event on
@@ -345,45 +513,45 @@ void main() {
     );
 
     test('buffering during playback with an advancing position is playing', () {
-      final value = VlcPlayerValue.fromEvent(
-        <String, Object?>{'state': 'buffering', 'position': 11000},
-        playing,
-      );
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'buffering',
+        'position': 11000,
+      }, playing);
       expect(value.state, VlcPlaybackState.playing);
     });
 
     // A real rebuffer stalls, so the position does not move.
     test('buffering with a stalled position stays buffering', () {
-      final value = VlcPlayerValue.fromEvent(
-        <String, Object?>{'state': 'buffering', 'position': 10000},
-        playing,
-      );
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'buffering',
+        'position': 10000,
+      }, playing);
       expect(value.state, VlcPlaybackState.buffering);
     });
 
     // Startup buffering arrives from opening, never from playing.
     test('buffering at startup is left alone', () {
-      final value = VlcPlayerValue.fromEvent(
-        <String, Object?>{'state': 'buffering', 'position': 1200},
-        const VlcPlayerValue(state: VlcPlaybackState.opening),
-      );
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'buffering',
+        'position': 1200,
+      }, const VlcPlayerValue(state: VlcPlaybackState.opening));
       expect(value.state, VlcPlaybackState.buffering);
     });
 
     test('a backwards position after a seek is not treated as playing', () {
-      final value = VlcPlayerValue.fromEvent(
-        <String, Object?>{'state': 'buffering', 'position': 5000},
-        playing,
-      );
+      final value = VlcPlayerValue.fromEvent(<String, Object?>{
+        'state': 'buffering',
+        'position': 5000,
+      }, playing);
       expect(value.state, VlcPlaybackState.buffering);
     });
 
     test('paused, stopped and ended are never corrected', () {
       for (final name in const ['paused', 'stopped', 'ended']) {
-        final value = VlcPlayerValue.fromEvent(
-          <String, Object?>{'state': name, 'position': 11000},
-          playing,
-        );
+        final value = VlcPlayerValue.fromEvent(<String, Object?>{
+          'state': name,
+          'position': 11000,
+        }, playing);
         expect(value.state.name, name);
       }
     });

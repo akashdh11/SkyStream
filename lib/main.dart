@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter/material.dart';
+import 'features/player/presentation/player_debug_flags.dart' show kPlayerRepaintRainbow;
+import 'package:flutter/rendering.dart' show debugRepaintRainbowEnabled;
 import 'package:flutter/services.dart'; // LogicalKeyboardKey, KeyDownEvent
 import 'package:flutter/foundation.dart'; // For kReleaseMode
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,6 +30,8 @@ import 'core/providers/device_info_provider.dart';
 import 'shared/widgets/loading_indicator.dart';
 import 'core/widgets/m3_toast_overlay.dart';
 import 'features/settings/presentation/general_settings_provider.dart';
+import 'features/player/presentation/player_platform_service.dart'
+    show immersiveRouteActive;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,6 +42,10 @@ void main() async {
   PaintingBinding.instance.imageCache
     ..maximumSize = 200
     ..maximumSizeBytes = 50 * 1024 * 1024; // 50 MB
+
+  // Repaint rainbow for the flicker hunt - see player_debug_flags.dart. A
+  // compile-time constant, so a normal build carries no trace of it.
+  if (kPlayerRepaintRainbow) debugRepaintRainbowEnabled = true;
 
   // Silence logs in release mode
   if (kReleaseMode) {
@@ -173,14 +181,11 @@ class MyApp extends ConsumerStatefulWidget {
   ConsumerState<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends ConsumerState<MyApp> with WindowListener {
+class _MyAppState extends ConsumerState<MyApp> {
   @override
   void initState() {
     super.initState();
     FocusManager.instance.addEarlyKeyEventHandler(_handleEarlyKeyEvent);
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      windowManager.addListener(this);
-    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(downloadServiceProvider).init();
       _checkExtensionsUpdates();
@@ -191,9 +196,6 @@ class _MyAppState extends ConsumerState<MyApp> with WindowListener {
   @override
   void dispose() {
     FocusManager.instance.removeEarlyKeyEventHandler(_handleEarlyKeyEvent);
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      windowManager.removeListener(this);
-    }
     super.dispose();
   }
 
@@ -649,17 +651,33 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
   bool _isFullScreen = false;
   bool _isAlwaysOnTop = false;
 
+  /// Whether a route is drawing to the window's own edges - the player.
+  bool _immersiveRoute = immersiveRouteActive.value;
+
   @override
   void initState() {
     super.initState();
     windowManager.addListener(this);
+    immersiveRouteActive.addListener(_onImmersiveRouteChanged);
     _updateStates();
   }
 
   @override
   void dispose() {
     windowManager.removeListener(this);
+    immersiveRouteActive.removeListener(_onImmersiveRouteChanged);
     super.dispose();
+  }
+
+  void _onImmersiveRouteChanged() {
+    if (!mounted) return;
+    setState(() {
+      _immersiveRoute = immersiveRouteActive.value;
+      // The MouseRegion leaves with the bar, so its onExit never arrives.
+      // Without this the bar returns fully expanded under a cursor that is
+      // nowhere near it.
+      if (_immersiveRoute) _hovered = false;
+    });
   }
 
   @override
@@ -694,12 +712,23 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
         _isMaximized = isMax;
         _isFullScreen = isFull;
         _isAlwaysOnTop = isAlways;
+        // Same reason as _onImmersiveRouteChanged: going full screen takes the
+        // MouseRegion away before it can report the pointer leaving.
+        if (isFull) _hovered = false;
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Nothing over the player, and nothing in full screen. This bar is stacked
+    // above every route and drawn last, so it wins: hovered it is a 48px slab
+    // over the player's own back button and title, and collapsed it is still
+    // an invisible 8px band across the top of the video that eats pointers for
+    // window furniture the viewer cannot see. Full screen has no furniture to
+    // offer at all - F11 is the way back out.
+    if (_immersiveRoute || _isFullScreen) return const SizedBox.shrink();
+
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 

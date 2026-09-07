@@ -32,6 +32,7 @@ import '../../../core/logger/app_logger.dart';
 import '../../../core/storage/episode_watch_repository.dart';
 import '../../library/presentation/history_provider.dart';
 import '../../tracking/data/sync_manager.dart';
+import 'episode_navigator.dart';
 import 'playback_progress.dart';
 import 'stream_resolver.dart' show ProviderReader;
 
@@ -43,12 +44,17 @@ class PlaybackTracker {
     required this.read,
     required this.item,
     required this.episode,
+    required this.videoUrl,
     required this.token,
   });
 
   final ProviderReader read;
   final MultimediaItem item;
   final Episode? episode;
+
+  /// The route's token, only ever used as [nextEpisodeFor]'s last resort for
+  /// locating the current episode when [episode] is null.
+  final String videoUrl;
 
   /// Session identity, matching [ProgressSample.token]. Samples from a
   /// superseded session are ignored rather than attributed to this one.
@@ -172,18 +178,45 @@ class PlaybackTracker {
     }
 
     _dispatch('markWatched', (m) => m.markWatched(item, currentEpisode));
+    _rollHistoryForward(currentEpisode);
+  }
 
-    // A finished film should leave Continue Watching. Series rollover needs the
-    // next-episode calculation and is handled with episode advancement.
-    if (!_isSeries) {
-      unawaited(
-        read(watchHistoryProvider.notifier)
-            .removeFromHistory(item.url)
-            .catchError((Object e) {
-              talker.error('Failed to clear finished item from history', e);
-            }),
+  /// Moves Continue Watching off the thing that has just finished.
+  ///
+  /// Here rather than in the screen's advance path because 90% is the moment
+  /// the viewer is done with this episode, and the credits are exactly when
+  /// they back out: leaving the rollover to end-of-media meant Continue
+  /// Watching still offered the finished episode at 92%. This is where the old
+  /// controller did it too (player_controller.dart:3921-3934), from
+  /// saveProgress the moment progress crossed the line.
+  ///
+  /// Runs at most once per session — [_markedWatched] gates the only caller —
+  /// and is idempotent with the advance path, which asks the same question
+  /// again when the media actually ends.
+  void _rollHistoryForward(Episode? currentEpisode) {
+    if (_isSeries) {
+      final lookup = nextEpisodeFor(
+        item: item,
+        current: currentEpisode,
+        videoUrl: videoUrl,
       );
+      final next = lookup.next;
+      if (next != null) {
+        rollForwardHistory(read: read, item: item, next: next);
+        return;
+      }
+      // Not located in the list means "don't know", not "the series ended".
+      // The delete below cascades across every per-episode row for this title.
+      if (!lookup.isFinalEpisode) return;
     }
+
+    unawaited(
+      read(watchHistoryProvider.notifier)
+          .removeFromHistory(item.url)
+          .catchError((Object e) {
+            talker.error('Failed to clear finished item from history', e);
+          }),
+    );
   }
 
   void _dispatch(String label, Future<void> Function(SyncManager) call) {

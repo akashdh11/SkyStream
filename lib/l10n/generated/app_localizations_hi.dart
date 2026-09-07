@@ -1316,4 +1316,290 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get showEpisodes => 'Episodes button';
+
+  @override
+  String get playerNoProviderSelected => 'No provider selected.';
+
+  @override
+  String get playerNothingToPlay => 'Nothing to play.';
+
+  @override
+  String playerCouldNotLoadSources(String error) {
+    return 'Could not load sources: $error';
+  }
+
+  @override
+  String get playerResolutionCancelled => 'Cancelled.';
+
+  @override
+  String get playerNoStreamsFound => 'No streams found.';
+
+  @override
+  String get playerDrmWidevine =>
+      'This channel uses Widevine DRM, which needs a licence module this player does not have.';
+
+  @override
+  String get playerDrmPlayReady =>
+      'This channel uses PlayReady DRM, which needs a licence module this player does not have.';
+
+  @override
+  String get playerDrmLicenceServer =>
+      'This channel needs a decryption key from a licence server, and the server did not provide a usable one.';
+
+  @override
+  String get playerDrmUnknown =>
+      'This channel is encrypted and no usable decryption key was provided.';
+
+  @override
+  String playerPlaybackFailed(String error) {
+    return 'Playback failed: $error';
+  }
+
+  @override
+  String playerNoSourcesPlayable(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'None of the $count sources would play.',
+      one: 'The only source would not play.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String playerNoSourcesPlayableWithReason(int count, String reason) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'None of the $count sources would play - $reason',
+      one: 'The only source would not play - $reason',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get playerPreparingTorrent => 'Preparing torrent…';
+
+  @override
+  String get playerReasonTorrentNotPrepared => 'torrent could not be prepared';
+
+  @override
+  String get playerReasonNoPlayableAddress => 'source has no playable address';
+
+  @override
+  String get playerReasonLiveFeedDropped => 'live feed dropped repeatedly';
+
+  @override
+  String get playerReasonStreamEndedEarly => 'stream ended before its duration';
+
+  @override
+  String get playerReasonPlaybackError => 'playback error';
+
+  @override
+  String get playerReasonSourceStoppedResponding =>
+      'the source stopped responding';
+
+  @override
+  String get playerReasonSourceNeverStarted => 'the source never started';
+
+  @override
+  String get playerReasonNetworkDropped => 'the network dropped';
+
+  @override
+  String get playerReasonSkipped => 'you skipped this source';
+
+  @override
+  String get playerSkipSource => 'Skip source';
+
+  @override
+  String get playerSourceReachable => 'उपलब्ध';
+
+  @override
+  String get playerReasonStreamEndedBeforePlaying =>
+      'stream ended before it played';
+
+  @override
+  String playerFinished(String title) {
+    return 'आपने $title पूरा कर लिया';
+  }
+
+  @override
+  String get playerReconnecting => 'Reconnecting…';
+
+  @override
+  String get playerSpeedNormal => 'Normal';
+
+  @override
+  String get torrentStats => 'Torrent stats';
+
+  @override
+  String get original => 'Original';
+
+  @override
+  String playerCouldNotReadTracks(String error) {
+    return 'ट्रैक पढ़े नहीं जा सके: $error';
+  }
+
+  @override
+  String playerTrackNumber(int id) {
+    return 'ट्रैक $id';
+  }
+
+  @override
+  String get subtitleDelay => 'उपशीर्षक विलंब';
+
+  @override
+  String get playerSourceRestoredPrevious =>
+      'That source would not play. Restored the previous one.';
+
+  @override
+  String get playerTorrentFileNotReady =>
+      'That file is not ready to stream yet.';
+
+  @override
+  String get torrentFiles => 'टॉरेंट फ़ाइलें';
+
+  @override
+  String get audio => 'ऑडियो';
+
+  @override
+  String get noAudioTracksReported => 'कोई ऑडियो ट्रैक रिपोर्ट नहीं हुआ';
+
+  @override
+  String get loadSubtitleFile => 'उपशीर्षक फ़ाइल लोड करें';
+
+  @override
+  String get searchSubtitlesOnline => 'ऑनलाइन खोजें';
+
+  @override
+  String get searchOnlineSubtitles => 'ऑनलाइन उपशीर्षक खोजें';
+
+  @override
+  String get subtitleLanguage => 'उपशीर्षक भाषा';
+
+  @override
+  String get subtitleDownloadFailed =>
+      'यह उपशीर्षक डाउनलोड नहीं हो सका। कोई और परिणाम आज़माएँ।';
+
+  @override
+  String subtitleSearchFailed(String error) {
+    return 'खोज विफल: $error';
+  }
+
+  @override
+  String get subtitleSearchPrompt => 'उपशीर्षक खोजने के लिए कोई शीर्षक खोजें।';
+
+  @override
+  String get noSubtitlesFoundTryAnother =>
+      'कोई उपशीर्षक नहीं मिला। कोई और शीर्षक या भाषा आज़माएँ।';
+
+  @override
+  String get seedsPeers => 'Seeds / Peers';
+
+  @override
+  String get subtitleAppearanceNote =>
+      'The engine draws subtitles, so it is handed these when playback starts — a change applies to the next video.';
+
+  @override
+  String get textSize => 'Text size';
+
+  @override
+  String get subtitleTextColour => 'Text colour';
+
+  @override
+  String get resetSubtitleAppearance => 'Reset subtitle appearance';
+
+  @override
+  String get resetSubtitleAppearanceSubtitle => 'Back to white text at size 22';
+
+  @override
+  String get subtitlePreviewSample => 'The quick brown fox';
+
+  @override
+  String subtitleBackgroundSummary(String color, int percent) {
+    return '$color · $percent%';
+  }
+
+  @override
+  String get opacityOff => 'Opacity: off';
+
+  @override
+  String opacityPercent(int percent) {
+    return 'Opacity: $percent%';
+  }
+
+  @override
+  String get colorWhite => 'White';
+
+  @override
+  String get colorYellow => 'Yellow';
+
+  @override
+  String get colorCyan => 'Cyan';
+
+  @override
+  String get colorGreen => 'Green';
+
+  @override
+  String get colorMagenta => 'Magenta';
+
+  @override
+  String get colorRed => 'Red';
+
+  @override
+  String get colorBlack => 'Black';
+
+  @override
+  String get colorDarkGrey => 'Dark grey';
+
+  @override
+  String get playerNowPlaying => 'अभी चल रहा है';
+
+  @override
+  String get playerQualityFilterDropped =>
+      'आपकी गुणवत्ता प्राथमिकता से कोई स्रोत नहीं मिला, इसलिए सभी स्रोत दिखाए गए हैं।';
+
+  @override
+  String playerSeeders(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count सीडर',
+      one: '1 सीडर',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get playerFiles => 'फ़ाइलें';
+
+  @override
+  String playerSeasonEpisode(int season, int episode) {
+    return 'S$season E$episode';
+  }
+
+  @override
+  String playerEpisodeNumber(int episode) {
+    return 'E$episode';
+  }
+
+  @override
+  String playerRuntimeMinutes(int count) {
+    return '$count मिनट';
+  }
+
+  @override
+  String get audioDelay => 'ऑडियो विलंब';
+
+  @override
+  String get subtitleSearchTitleFallback =>
+      'इस शीर्षक की ID से कुछ नहीं मिला। इसके बदले शीर्षक से मिले परिणाम दिखाए गए हैं।';
+
+  @override
+  String get subtitleSearchSeasonFallback =>
+      'इस एपिसोड के लिए कोई उपशीर्षक नहीं मिला। ये पूरे सीजन के हैं, इसलिए फ़ाइल के नाम में एपिसोड नंबर जाँच लें।';
+
+  @override
+  String get subtitleAccountsNotConfigured =>
+      'कोई उपशीर्षक खाता सेट नहीं है। ऑनलाइन खोजने के लिए सेटिंग्स में OpenSubtitles, SubDL या SubSource कुंजी जोड़ें।';
 }

@@ -15,28 +15,30 @@ internal class VlcPlayerViewFactory(
         val view = VlcPlayerPlatformView(
             viewContext,
             messenger,
-            viewId,
-            readOptions(args),
+            viewId.toLong(),
+            readVlcOptions((args as? Map<*, *>)?.get("options")),
             readFit(args),
+            VlcRenderTarget.VideoLayout(viewContext),
             onDispose,
         )
         onCreate(viewId.toLong(), view)
         return view
     }
 
-    private fun readOptions(args: Any?): ArrayList<String> {
-        val options = ArrayList<String>()
-        val rawOptions = (args as? Map<*, *>)?.get("options") as? List<*> ?: return options
-
-        rawOptions.forEach { option ->
-            if (option != null) {
-                options.add(option.toString())
-            }
-        }
-        return options
-    }
-
     private fun readFit(args: Any?): String {
         return ((args as? Map<*, *>)?.get("fit") as? String) ?: "contain"
     }
+}
+
+/// The libVLC option list as Dart sent it, whichever channel it came down.
+internal fun readVlcOptions(raw: Any?): ArrayList<String> {
+    val options = ArrayList<String>()
+    val rawOptions = raw as? List<*> ?: return options
+
+    rawOptions.forEach { option ->
+        if (option != null) {
+            options.add(option.toString())
+        }
+    }
+    return options
 }

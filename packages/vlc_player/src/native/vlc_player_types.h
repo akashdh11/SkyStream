@@ -61,6 +61,15 @@ struct VlcSnapshot {
   double playback_speed = 1.0;
   int64_t audio_delay = 0;
   int64_t subtitle_delay = 0;
+  // libVLC track ids; -1 when there is none / subtitles are off. Dart
+  // normalises -1 to null.
+  int audio_track = -1;
+  int subtitle_track = -1;
+  // Bumped whenever the audio + spu track SET changes - not merely its size.
+  // See VlcPlayerCore::Snapshot(), which diffs an order-sensitive fingerprint
+  // so a wholesale list swap of the same length still moves this. Monotonic
+  // per core.
+  int64_t track_revision = 0;
   bool is_ready = false;
   bool is_seekable = false;
   bool is_live = false;
@@ -77,6 +86,9 @@ inline bool operator==(const VlcSnapshot& lhs, const VlcSnapshot& rhs) {
          lhs.playback_speed == rhs.playback_speed &&
          lhs.audio_delay == rhs.audio_delay &&
          lhs.subtitle_delay == rhs.subtitle_delay &&
+         lhs.audio_track == rhs.audio_track &&
+         lhs.subtitle_track == rhs.subtitle_track &&
+         lhs.track_revision == rhs.track_revision &&
          lhs.is_ready == rhs.is_ready && lhs.is_seekable == rhs.is_seekable &&
          lhs.is_live == rhs.is_live && lhs.video_width == rhs.video_width &&
          lhs.video_height == rhs.video_height &&

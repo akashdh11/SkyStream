@@ -89,11 +89,69 @@ const Map<String, String> subtitleLanguages = {
   'Chinese': 'zh',
 };
 
+/// How the results currently in [SubtitleSearch]'s state were found.
+///
+/// The notifier walks a chain of passes and stops at the first one that
+/// returns anything: exact id match -> title text -> season without episode.
+/// A widget that `ref.watch`es the state and `ref.read`s
+/// `SubtitleSearch.lastMode` in the same build sees a consistent pair, because
+/// the mode is always assigned before the state write of the same pass.
+enum SubtitleSearchMode {
+  /// IMDb / TMDb id was sent (with season/episode when known).
+  byId,
+
+  /// No id was available; the title text was sent.
+  byTitle,
+
+  /// The id pass returned nothing; these are title-text matches.
+  byTitleAfterIdMiss,
+
+  /// The episode-scoped pass(es) returned nothing; these are for the whole
+  /// season. The viewer has to pick the right episode's file by name.
+  bySeasonAfterEpisodeMiss,
+}
+
+/// The (resolved) arguments of one `search()` call, used to skip a repeat of
+/// a search that already completed.
+typedef _SearchRequest = ({
+  String query,
+  String? imdbId,
+  int? tmdbId,
+  int? season,
+  int? episode,
+  String language,
+});
+
 @riverpod
 class SubtitleSearch extends _$SubtitleSearch {
+  /// Test seam: when non-null, used instead of the three real providers.
+  ///
+  /// A generated notifier cannot take constructor arguments, so this is a
+  /// static. Set it in `setUp`, clear it in `tearDown`.
+  @visibleForTesting
+  static List<SubtitleProvider>? debugProviders;
+
+  /// How the current results were found. Assigned before every `state`
+  /// write, so reading it next to a watched state is always consistent.
+  SubtitleSearchMode lastMode = SubtitleSearchMode.byTitle;
+
   late List<SubtitleProvider> _providers;
   CancelToken? _cancelToken;
   int _activeSearchId = 0;
+
+  /// The request whose passes all ran to completion most recently *and found
+  /// something*. Repeating it while the state is data is a no-op: the sheet
+  /// auto-searches on open, and OpenSubtitles rate-limits per key.
+  ///
+  /// An outcome of nothing is deliberately never latched here. Every provider
+  /// swallows its own network errors and answers `[]` (subtitle_providers.dart),
+  /// so a dead Wi-Fi link, a 429 and a genuine miss all reach this notifier as
+  /// the same empty chain. The sheet's search button is the only retry
+  /// affordance there is - no pull-to-refresh, and no keyboard on a television
+  /// - so latching an empty outcome made that button a no-op for the rest of
+  /// the sheet's life, exactly when it was needed. A pass that found nothing
+  /// also spent nothing worth protecting a rate-limited key from.
+  _SearchRequest? _lastCompleted;
 
   @override
   FutureOr<List<OnlineSubtitle>?> build() {
@@ -113,6 +171,12 @@ class SubtitleSearch extends _$SubtitleSearch {
   }
 
   void _initializeProviders() {
+    final seam = debugProviders;
+    if (seam != null) {
+      _providers = List.unmodifiable(seam);
+      return;
+    }
+
     final dio = ref.read(dioClientProvider);
     final settings =
         ref.read(playerSettingsProvider).asData?.value ??
@@ -130,6 +194,21 @@ class SubtitleSearch extends _$SubtitleSearch {
     ];
   }
 
+  /// Searches every provider and publishes results as they arrive.
+  ///
+  /// When every provider comes back empty the notifier falls back on its own,
+  /// so the caller sends the most specific request it has and reads
+  /// [lastMode] to learn what actually matched:
+  ///
+  /// 1. ids present -> [SubtitleSearchMode.byId]; miss and [query] non-empty
+  ///    -> retry without ids as [SubtitleSearchMode.byTitleAfterIdMiss];
+  /// 2. still empty with both [season] and [episode] -> retry without the
+  ///    episode as [SubtitleSearchMode.bySeasonAfterEpisodeMiss];
+  /// 3. still empty -> `AsyncData([])`.
+  ///
+  /// Never more than three passes. A call that repeats the last request that
+  /// found something, while the state is data, is a no-op (see
+  /// [_lastCompleted]); a search that came back empty is always retryable.
   Future<void> search({
     required String query,
     String? imdbId,
@@ -138,25 +217,99 @@ class SubtitleSearch extends _$SubtitleSearch {
     int? episode,
     String? language,
   }) async {
-    // 1. Cancel previous search
+    final String resolvedLanguage =
+        language ?? ref.read(subtitleLanguageProvider);
+    final _SearchRequest request = (
+      query: query,
+      imdbId: imdbId,
+      tmdbId: tmdbId,
+      season: season,
+      episode: episode,
+      language: resolvedLanguage,
+    );
+    if (state is AsyncData && request == _lastCompleted) {
+      if (kDebugMode) {
+        debugPrint(
+          "[SubtitleSearch] Skipping repeat of completed search for: $query",
+        );
+      }
+      return;
+    }
+    _lastCompleted = null;
+
+    final hasId = imdbId != null || tmdbId != null;
+    _runPass(
+      origin: request,
+      pass: 1,
+      mode: hasId ? SubtitleSearchMode.byId : SubtitleSearchMode.byTitle,
+      query: query,
+      imdbId: imdbId,
+      tmdbId: tmdbId,
+      season: season,
+      episode: episode,
+      language: resolvedLanguage,
+    );
+  }
+
+  /// The pass that follows an empty [mode] pass, or null when the chain ends.
+  static SubtitleSearchMode? _nextMode({
+    required SubtitleSearchMode mode,
+    required String query,
+    required int? season,
+    required int? episode,
+  }) {
+    if (mode == SubtitleSearchMode.byId && query.trim().isNotEmpty) {
+      return SubtitleSearchMode.byTitleAfterIdMiss;
+    }
+    if (mode != SubtitleSearchMode.bySeasonAfterEpisodeMiss &&
+        season != null &&
+        episode != null) {
+      return SubtitleSearchMode.bySeasonAfterEpisodeMiss;
+    }
+    return null;
+  }
+
+  void _runPass({
+    required _SearchRequest origin,
+    required int pass,
+    required SubtitleSearchMode mode,
+    required String query,
+    required String? imdbId,
+    required int? tmdbId,
+    required int? season,
+    required int? episode,
+    required String language,
+  }) {
+    // 1. Cancel previous search (or the previous pass of this one)
     _cancelToken?.cancel();
-    _cancelToken = CancelToken();
+    final cancelToken = CancelToken();
+    _cancelToken = cancelToken;
 
     // 2. Increment search ID to ignore late results from previous calls
     final searchId = ++_activeSearchId;
 
     if (kDebugMode) {
-      print(
-        "🔍 [SubtitleSearch] Starting search #$searchId for: $query (IMDB: $imdbId)",
+      debugPrint(
+        "[SubtitleSearch] Starting search #$searchId pass $pass ($mode) "
+        "for: $query (IMDB: $imdbId, TMDB: $tmdbId, S$season E$episode)",
       );
     }
+    // Mode first, state second: a build that watches the state and reads the
+    // mode must never see the new state with the previous pass's mode.
+    lastMode = mode;
     state = const AsyncLoading();
 
+    final providers = _providers;
+    if (providers.isEmpty) {
+      // Not latched (see [_lastCompleted]): nothing was searched.
+      state = const AsyncData([]);
+      return;
+    }
+
     final List<OnlineSubtitle> allResults = [];
-    final lang = language ?? ref.read(subtitleLanguageProvider);
     int completedProviders = 0;
 
-    for (final provider in _providers) {
+    for (final provider in providers) {
       unawaited(
         provider
             .search(
@@ -165,8 +318,8 @@ class SubtitleSearch extends _$SubtitleSearch {
               tmdbId: tmdbId,
               season: season,
               episode: episode,
-              language: lang,
-              cancelToken: _cancelToken,
+              language: language,
+              cancelToken: cancelToken,
             )
             .then((results) {
               if (!ref.mounted || searchId != _activeSearchId) return;
@@ -186,11 +339,41 @@ class SubtitleSearch extends _$SubtitleSearch {
               if (!ref.mounted || searchId != _activeSearchId) return;
 
               completedProviders++;
-              // If all finished and no results found, ensure we transition from loading to empty data
-              if (completedProviders == _providers.length &&
-                  allResults.isEmpty) {
-                state = const AsyncData([]);
+              if (completedProviders != providers.length) return;
+
+              if (allResults.isNotEmpty) {
+                _lastCompleted = origin;
+                return;
               }
+
+              // Every provider came back empty: widen, or give up.
+              final next = _nextMode(
+                mode: mode,
+                query: query,
+                season: season,
+                episode: episode,
+              );
+              if (next == null) {
+                // Not latched (see [_lastCompleted]): an empty chain is
+                // indistinguishable from a failed one, so the next press of
+                // the sheet's search button has to reach the network.
+                state = const AsyncData([]);
+                return;
+              }
+              final dropIds = next == SubtitleSearchMode.byTitleAfterIdMiss;
+              final dropEpisode =
+                  next == SubtitleSearchMode.bySeasonAfterEpisodeMiss;
+              _runPass(
+                origin: origin,
+                pass: pass + 1,
+                mode: next,
+                query: query,
+                imdbId: dropIds ? null : imdbId,
+                tmdbId: dropIds ? null : tmdbId,
+                season: season,
+                episode: dropEpisode ? null : episode,
+                language: language,
+              );
             }),
       );
     }

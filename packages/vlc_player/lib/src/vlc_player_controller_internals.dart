@@ -9,5 +9,9 @@ abstract interface class VlcPlayerControllerInternals {
   Future<int> attachTexturePlayer();
 
   /// Detaches and disposes the currently attached native player.
-  Future<void> detach();
+  ///
+  /// [viewId] names the view the caller owns, so a teardown that lands after
+  /// its replacement has attached cannot take the live player with it. Null
+  /// detaches whatever is attached.
+  Future<void> detach({int? viewId});
 }

@@ -31,6 +31,49 @@ enum VlcPlaybackState {
   error,
 }
 
+/// Why the system, rather than the viewer, changed playback.
+///
+/// Audio is an exclusive resource on a phone: a call, a navigation prompt or
+/// another media app all expect whatever is playing to get out of the way, and
+/// nothing in libVLC knows that. The native side does, and it acts in the same
+/// instant — a round trip to Dart would leave a film talking over the first
+/// ring — so this is a report of what already happened, not a request.
+///
+/// A host that shows nothing for these is still correct: [VlcPlayerValue.state]
+/// already says `paused`. This says *why*, which is the difference between a
+/// player that looks broken and one that explains itself.
+enum VlcAudioInterruption {
+  /// Nothing is interrupting playback.
+  none,
+
+  /// Audio went to another app for good, and playback is paused.
+  ///
+  /// Only the viewer restarts this one. Android reports it as
+  /// `AUDIOFOCUS_LOSS`; iOS as an interruption that ended without advising a
+  /// resume.
+  focusLost,
+
+  /// Audio went to something short-lived — typically a phone call — and
+  /// playback is paused until it comes back.
+  ///
+  /// This is the only interruption the controller resumes from by itself.
+  focusLostTransient,
+
+  /// Something is talking over the top and playback continues, attenuated.
+  ///
+  /// Android only (`AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK`). Ducking beats
+  /// pausing for a navigation prompt, and the viewer's chosen
+  /// [VlcPlayerValue.volume] is untouched — the attenuation is applied under
+  /// it and lifted when the prompt finishes.
+  ducked,
+
+  /// The output device went away and playback is paused.
+  ///
+  /// Headphones pulled out, or Bluetooth dropped. Resuming would blare the
+  /// film out of the phone speaker, so this never resumes on its own.
+  becameNoisy,
+}
+
 /// Immutable snapshot of the native player state.
 ///
 /// Listen to `VlcPlayerController` to receive updated values as VLC emits
@@ -46,10 +89,16 @@ class VlcPlayerValue {
     this.playbackSpeed = 1,
     this.audioDelay = Duration.zero,
     this.subtitleDelay = Duration.zero,
+    this.activeAudioTrackId,
+    this.activeSubtitleTrackId,
+    this.trackRevision = 0,
     this.isReady = false,
     this.isSeekable = false,
     this.isLive = false,
+    this.isStalled = false,
+    this.interruption = VlcAudioInterruption.none,
     this.videoSize,
+    this.codedVideoSize,
     this.bufferingProgress,
     this.error,
     this.errorDescription,
@@ -83,6 +132,63 @@ class VlcPlayerValue {
   /// Positive values delay subtitles; negative values show subtitles earlier.
   final Duration subtitleDelay;
 
+  /// The id of the audio track the engine is currently playing, or null when
+  /// there is none.
+  ///
+  /// Null covers every "nothing" the engine can mean: no media loaded, media
+  /// with no audio elementary stream, or a track list not yet parsed. libVLC
+  /// itself reports these as `-1`, and that pseudo-id is normalised to null
+  /// here, once, so no consumer has to compare against it. `0` is a legal
+  /// track id and is passed through untouched.
+  ///
+  /// Ids are the same native ids [VlcTrackDescription.id] carries, so a
+  /// selected-row check is `track.id == value.activeAudioTrackId`. Every
+  /// backend re-sends its snapshot after `setAudioTrack` and after each seek,
+  /// so a selection made through the controller shows up here without a
+  /// pull; an engine-initiated switch is reported on the next tick.
+  final int? activeAudioTrackId;
+
+  /// The id of the subtitle track the engine is currently rendering, or null
+  /// when subtitles are off.
+  ///
+  /// Null means the same as for [activeAudioTrackId] - no media, no text
+  /// stream, or an explicit `disableSubtitle()` - and is likewise the
+  /// normalised form of libVLC's `-1`, so "subtitles off" is a null check and
+  /// never a magic-number compare. `0` is a legal id. Re-sent by every
+  /// backend after `setSubtitleTrack`, `disableSubtitle` and each seek: each
+  /// of those is a synchronous write on the player that reads straight back,
+  /// so the snapshot forced after the call already carries the new id.
+  ///
+  /// `addSubtitle` is deliberately not in that list. libVLC 3 hands an added
+  /// slave to the input thread rather than applying it inline, so on all five
+  /// backends the snapshot forced immediately after the call still describes
+  /// the pre-add state — the future completing means "the engine accepted the
+  /// slave", not "the track is in the list now". The side-car surfaces when
+  /// the engine announces the new elementary stream (`.esAdded` on macOS and
+  /// iOS, `MediaPlayer.Event.ESAdded` on Android, the next 500 ms poll on
+  /// Windows and Linux), and that is what moves [trackRevision]. Key off
+  /// [trackRevision], never off the `addSubtitle` future.
+  final int? activeSubtitleTrackId;
+
+  /// A counter that moves whenever the engine's track list changes shape.
+  ///
+  /// Monotonic per player, starting at `0`, and bumped when the audio +
+  /// subtitle track *set* changes — not merely when its size changes. macOS,
+  /// iOS, Windows and Linux hash the ids and names of both lists into every
+  /// snapshot and bump when that hash moves, so a same-size swap (an adaptive
+  /// rendition change, an MPEG-TS PMT update) is caught too; Android bumps on
+  /// an audio or subtitle `ESAdded` / `ESDeleted`, and deliberately not on a
+  /// video-only one. A demuxer finishing its parse, a side-car file landing
+  /// through `addSubtitle`, a stream dropping a language all move it.
+  ///
+  /// Because `addSubtitle` converges asynchronously, this — not the
+  /// completion of the call — is the signal that an added side-car exists.
+  /// Consumers that cache `getAudioTracks()` / `getSubtitleTracks()` results
+  /// should refetch when this differs from the revision they fetched under,
+  /// rather than polling. The number itself carries no meaning beyond
+  /// "changed since".
+  final int trackRevision;
+
   /// Whether the native player has reached a playable active or terminal state.
   final bool isReady;
 
@@ -92,8 +198,36 @@ class VlcPlayerValue {
   /// Whether the current media looks like a live stream.
   final bool isLive;
 
+  /// Whether playback has visibly stopped making progress while [state] still
+  /// says it is running.
+  ///
+  /// This is the mid-play spinner signal, and it deliberately does not come
+  /// from libVLC's state machine. libVLC 3 keeps reporting `playing` through a
+  /// rebuffer on every platform but Android, so [isBuffering] can only ever
+  /// describe the startup buffer. What does betray a stall is the position
+  /// clock standing still, and the controller - not the natives - watches that
+  /// clock and raises this once it has stood still for
+  /// `VlcPlayerController.stallIndicatorDelay`. It is only ever true while
+  /// [state] is [VlcPlaybackState.playing] or [VlcPlaybackState.buffering]: a
+  /// paused, stopped, ended or errored player is not stalled, it is what it
+  /// says it is.
+  final bool isStalled;
+
+  /// Why the system last interrupted playback, if it has.
+  final VlcAudioInterruption interruption;
+
   /// Decoded video size when VLC exposes it.
   final Size? videoSize;
+
+  /// The decoder's buffer size on a texture-backed player, when it differs
+  /// from [videoSize].
+  ///
+  /// Decoders pad height to a multiple of 16, so a 1080p stream decodes into
+  /// 1920x1088 with eight rows nobody writes - and unwritten NV12 is green.
+  /// The texture is that whole buffer; the widget uses this to clip it back
+  /// to the visible picture. Null for view-backed players, whose drawable
+  /// already crops.
+  final Size? codedVideoSize;
 
   /// Normalized buffering progress from `0.0` to `1.0`, when available.
   final double? bufferingProgress;
@@ -113,6 +247,9 @@ class VlcPlayerValue {
   /// Whether [state] is [VlcPlaybackState.error].
   bool get hasError => state == VlcPlaybackState.error;
 
+  /// Whether the system is currently interrupting playback.
+  bool get isInterrupted => interruption != VlcAudioInterruption.none;
+
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) {
@@ -126,10 +263,16 @@ class VlcPlayerValue {
         other.playbackSpeed == playbackSpeed &&
         other.audioDelay == audioDelay &&
         other.subtitleDelay == subtitleDelay &&
+        other.activeAudioTrackId == activeAudioTrackId &&
+        other.activeSubtitleTrackId == activeSubtitleTrackId &&
+        other.trackRevision == trackRevision &&
         other.isReady == isReady &&
         other.isSeekable == isSeekable &&
         other.isLive == isLive &&
+        other.isStalled == isStalled &&
+        other.interruption == interruption &&
         other.videoSize == videoSize &&
+        other.codedVideoSize == codedVideoSize &&
         other.bufferingProgress == bufferingProgress &&
         other.error == error &&
         other.errorDescription == errorDescription;
@@ -144,10 +287,16 @@ class VlcPlayerValue {
     playbackSpeed,
     audioDelay,
     subtitleDelay,
+    activeAudioTrackId,
+    activeSubtitleTrackId,
+    trackRevision,
     isReady,
     isSeekable,
     isLive,
+    isStalled,
+    interruption,
     videoSize,
+    codedVideoSize,
     bufferingProgress,
     error,
     errorDescription,
@@ -155,7 +304,8 @@ class VlcPlayerValue {
 
   /// Returns a copy with selected fields replaced.
   ///
-  /// Set [clearVideoSize], [clearBufferingProgress], or [clearError] to remove
+  /// Set [clearVideoSize], [clearBufferingProgress], [clearError],
+  /// [clearActiveAudioTrack], or [clearActiveSubtitleTrack] to remove
   /// nullable values that would otherwise be preserved from the current value.
   VlcPlayerValue copyWith({
     VlcPlaybackState? state,
@@ -165,11 +315,19 @@ class VlcPlayerValue {
     double? playbackSpeed,
     Duration? audioDelay,
     Duration? subtitleDelay,
+    int? activeAudioTrackId,
+    bool clearActiveAudioTrack = false,
+    int? activeSubtitleTrackId,
+    bool clearActiveSubtitleTrack = false,
+    int? trackRevision,
     bool? isReady,
     bool? isSeekable,
     bool? isLive,
+    bool? isStalled,
+    VlcAudioInterruption? interruption,
     Size? videoSize,
     bool clearVideoSize = false,
+    Size? codedVideoSize,
     double? bufferingProgress,
     bool clearBufferingProgress = false,
     VlcPlayerError? error,
@@ -198,10 +356,24 @@ class VlcPlayerValue {
       playbackSpeed: playbackSpeed ?? this.playbackSpeed,
       audioDelay: audioDelay ?? this.audioDelay,
       subtitleDelay: subtitleDelay ?? this.subtitleDelay,
+      activeAudioTrackId: clearActiveAudioTrack
+          ? null
+          : activeAudioTrackId ?? this.activeAudioTrackId,
+      activeSubtitleTrackId: clearActiveSubtitleTrack
+          ? null
+          : activeSubtitleTrackId ?? this.activeSubtitleTrackId,
+      trackRevision: trackRevision ?? this.trackRevision,
       isReady: isReady ?? this.isReady,
       isSeekable: isSeekable ?? this.isSeekable,
       isLive: isLive ?? this.isLive,
+      isStalled: isStalled ?? this.isStalled,
+      interruption: interruption ?? this.interruption,
       videoSize: clearVideoSize ? null : videoSize ?? this.videoSize,
+      // Cleared together with videoSize: both describe the same picture, and
+      // a stale coded size against a fresh visible one would clip wrongly.
+      codedVideoSize: clearVideoSize
+          ? null
+          : codedVideoSize ?? this.codedVideoSize,
       bufferingProgress: clearBufferingProgress
           ? null
           : bufferingProgress ?? this.bufferingProgress,
@@ -218,7 +390,8 @@ class VlcPlayerValue {
       return previous;
     }
 
-    var state = _stateFromString(_stringValue(event['state'])) ?? previous.state;
+    var state =
+        _stateFromString(_stringValue(event['state'])) ?? previous.state;
 
     // libVLC's state machine cannot be taken at face value. VLCKit reports
     // `buffering` for the whole of healthy playback with `isPlaying` false, and
@@ -244,12 +417,25 @@ class VlcPlayerValue {
     }
     final hasVideoSize = event.containsKey('videoSize');
     final videoSize = hasVideoSize ? _sizeFromMap(event['videoSize']) : null;
+    final codedVideoSize = event.containsKey('codedSize')
+        ? _sizeFromMap(event['codedSize'])
+        : null;
     final hasBufferingProgress = event.containsKey('bufferingProgress');
     final bufferingProgress = hasBufferingProgress
         ? _normalizedProgress(event['bufferingProgress'])
         : null;
     final error = _errorFromEvent(event);
+    // Track ids: an absent key keeps the previous value (older natives and
+    // test fixtures send none), while a present key that is not a usable id -
+    // libVLC's -1 for "none/off" - clears it to null.
+    final hasAudioTrack = event.containsKey('audioTrack');
+    final audioTrack = _trackIdValue(event['audioTrack']);
+    final hasSubtitleTrack = event.containsKey('subtitleTrack');
+    final subtitleTrack = _trackIdValue(event['subtitleTrack']);
 
+    // isStalled is deliberately not read from the event. No native backend can
+    // report it - see the field - so it is carried over from [previous] and
+    // owned entirely by the controller's position clock.
     return previous.copyWith(
       state: state,
       position: _durationFromMilliseconds(event['position']),
@@ -258,10 +444,19 @@ class VlcPlayerValue {
       playbackSpeed: _doubleValue(event['playbackSpeed']),
       audioDelay: _durationFromMicroseconds(event['audioDelay']),
       subtitleDelay: _durationFromMicroseconds(event['subtitleDelay']),
+      activeAudioTrackId: audioTrack,
+      clearActiveAudioTrack: hasAudioTrack && audioTrack == null,
+      activeSubtitleTrackId: subtitleTrack,
+      clearActiveSubtitleTrack: hasSubtitleTrack && subtitleTrack == null,
+      trackRevision: _intValue(event['trackRevision']),
       isReady: _boolValue(event['isReady']) ?? _isReadyState(state),
       isSeekable: _boolValue(event['isSeekable']),
       isLive: _boolValue(event['isLive']),
+      interruption: _interruptionFromString(
+        _stringValue(event['interruption']),
+      ),
       videoSize: videoSize,
+      codedVideoSize: codedVideoSize,
       clearVideoSize:
           (hasVideoSize && videoSize == null) || _clearsVideoSize(state),
       bufferingProgress: bufferingProgress,
@@ -346,6 +541,11 @@ class VlcPlayerValue {
 
   static String? _stringValue(Object? value) => value is String ? value : null;
 
+  /// A native track id, or null for anything that is not one: libVLC's `-1`
+  /// "none" pseudo-id, non-numeric junk, NaN. `0` is a valid id.
+  static int? _trackIdValue(Object? value) =>
+      value is num && value.isFinite && value >= 0 ? value.round() : null;
+
   static int? _intValue(Object? value) {
     if (value is int) {
       return value;
@@ -364,6 +564,22 @@ class VlcPlayerValue {
   }
 
   static bool? _boolValue(Object? value) => value is bool ? value : null;
+
+  /// An absent or unrecognised name leaves the current interruption alone.
+  ///
+  /// Only Android and iOS have an audio session to report on, so most events
+  /// carry no interruption at all; reading that as "the interruption ended"
+  /// would resume a film in the middle of a phone call.
+  static VlcAudioInterruption? _interruptionFromString(String? value) {
+    return switch (value) {
+      'none' => VlcAudioInterruption.none,
+      'focusLost' => VlcAudioInterruption.focusLost,
+      'focusLostTransient' => VlcAudioInterruption.focusLostTransient,
+      'ducked' => VlcAudioInterruption.ducked,
+      'becameNoisy' => VlcAudioInterruption.becameNoisy,
+      _ => null,
+    };
+  }
 
   static VlcPlaybackState? _stateFromString(String? value) {
     return switch (value) {

@@ -8,8 +8,15 @@ import io.flutter.plugin.common.MethodChannel
 class VlcPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private val players = HashMap<Long, VlcPlayerPlatformView>()
     private var channel: MethodChannel? = null
+    private var binding: FlutterPlugin.FlutterPluginBinding? = null
+
+    // Texture players count down from -1 so their ids can never collide with
+    // the platform-view ids the engine mints, which count up from 0. Both
+    // kinds share the one `players` map and the one method channel.
+    private var nextTextureViewId = -1L
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        this.binding = binding
         val messenger = binding.binaryMessenger
         channel = MethodChannel(messenger, CHANNEL_NAME).also {
             it.setMethodCallHandler(this)
@@ -32,6 +39,13 @@ class VlcPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        // Ahead of the viewId guard: `create` is the call that mints one, so it
+        // is the only method that arrives without it.
+        if (call.method == "create") {
+            createTexturePlayer(call, result)
+            return
+        }
+
         val rawViewId = call.argument<Number>("viewId")
         if (rawViewId == null) {
             result.error("invalid_args", "A valid viewId is required.", null)
@@ -168,6 +182,41 @@ class VlcPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         channel = null
         players.values.toList().forEach { it.dispose() }
         players.clear()
+        this.binding = null
+    }
+
+    /// Builds a texture-backed player and hands Dart both ids it needs.
+    ///
+    /// Mirrors the Darwin plugins' `create`: the widget has no platform view to
+    /// wait on, so the reply carries the viewId every later call is keyed by
+    /// and the textureId the `Texture` widget renders.
+    private fun createTexturePlayer(call: MethodCall, result: MethodChannel.Result) {
+        val binding = this.binding
+        if (binding == null) {
+            result.error("create_failed", "vlc_player is not attached to a Flutter engine.", null)
+            return
+        }
+        val viewId = nextTextureViewId--
+        val producer = binding.textureRegistry.createSurfaceProducer()
+        val player = VlcPlayerPlatformView(
+            // The application context, not an activity's: this player is not a
+            // view and outlives any one window. Audio focus already does the
+            // same, and libVLC itself only wants a Context.
+            binding.applicationContext,
+            binding.binaryMessenger,
+            viewId,
+            readVlcOptions(call.argument<List<*>>("options")),
+            // Fit is applied in Dart on this target; see setFit.
+            "contain",
+            VlcRenderTarget.Texture(producer),
+            onDispose = { id, disposed ->
+                if (players[id] === disposed) {
+                    players.remove(id)
+                }
+            },
+        )
+        players[viewId] = player
+        result.success(mapOf("viewId" to viewId, "textureId" to producer.id()))
     }
 
     private fun disposePlayer(viewId: Long) {

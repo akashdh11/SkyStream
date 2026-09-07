@@ -667,318 +667,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
 
-    final scrollController = ScrollController();
-    final chipsScrollController = ScrollController();
-    bool didInitialScroll = false;
-
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text(l10n.selectProvider),
-          contentPadding: const EdgeInsets.fromLTRB(0, 20, 0, 0),
-          content: SizedBox(
-            width: 600,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Consumer(
-                  builder: (context, ref, _) {
-                    final currentFilter = ref.watch(homeFilterProvider);
-                    return DesktopScrollWrapper(
-                      controller: chipsScrollController,
-                      isCompact: true,
-                      child: SingleChildScrollView(
-                        controller: chipsScrollController,
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        child: Row(
-                          children: [
-                            FilterChip(
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              label: Text(l10n.all),
-                              selected: currentFilter == null,
-                              onSelected: (_) => ref
-                                  .read(homeFilterProvider.notifier)
-                                  .setFilter(null),
-                            ),
-                            const SizedBox(width: 8),
-                            ...ProviderType.values
-                                .where((t) => t != ProviderType.other)
-                                .map((type) {
-                                  return Padding(
-                                    padding: const EdgeInsets.only(right: 8),
-                                    child: FilterChip(
-                                      visualDensity: VisualDensity.compact,
-                                      materialTapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
-                                      label: Text(
-                                        _getLocalizedType(type, l10n),
-                                      ),
-                                      selected: currentFilter == type,
-                                      onSelected: (_) => ref
-                                          .read(homeFilterProvider.notifier)
-                                          .setFilter(type),
-                                    ),
-                                  );
-                                }),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                const Divider(),
-                Flexible(
-                  child: Consumer(
-                    builder: (context, ref, _) {
-                      final filter = ref.watch(homeFilterProvider);
-                      final extensionsState = ref.watch(
-                        extensionsControllerProvider,
-                      );
-                      final installedPlugins = extensionsState.installedPlugins;
-
-                      final filteredProviders = filter == null
-                          ? providers
-                          : providers
-                                .where((p) => p.supportedTypes.contains(filter))
-                                .toList();
-
-                      // Auto-scroll to selected provider on initial show
-                      int targetIndex = -1;
-                      if (activeProvider == null) {
-                        if (filter == null) {
-                          targetIndex = 0;
-                        }
-                      } else {
-                        final idx = filteredProviders.indexWhere(
-                          (p) => p.packageName == activeProvider.packageName,
-                        );
-                        if (idx != -1) {
-                          targetIndex = filter == null ? idx + 1 : idx;
-                        } else {
-                          targetIndex = 0;
-                        }
-                      }
-
-                      // If still -1 (e.g. activeProvider == null and filter != null), focus first item
-                      if (targetIndex == -1) targetIndex = 0;
-
-                      if (!didInitialScroll && targetIndex != -1) {
-                        didInitialScroll = true;
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (scrollController.hasClients) {
-                            final itemTop = targetIndex * 56.0;
-                            final viewportHeight =
-                                scrollController.position.viewportDimension;
-                            const itemHeight = 56.0;
-                            final offset =
-                                itemTop -
-                                (viewportHeight / 2) +
-                                (itemHeight / 2);
-                            final maxScroll =
-                                scrollController.position.maxScrollExtent;
-                            scrollController.jumpTo(
-                              offset.clamp(0.0, maxScroll),
-                            );
-                          }
-                        });
-                      }
-
-                      return RadioGroup<String?>(
-                        groupValue: activeProvider?.packageName,
-                        onChanged: (val) {
-                          final selected = val == null
-                              ? null
-                              : providers.firstWhere(
-                                  (p) => p.packageName == val,
-                                );
-                          ref
-                              .read(activeProviderProvider.notifier)
-                              .set(selected);
-                          Navigator.pop(context);
-                          ref.invalidate(homeDataProvider);
-                        },
-                        child: Material(
-                          color: Colors.transparent,
-                          clipBehavior: Clip.hardEdge,
-                          child: ListView.builder(
-                            controller: scrollController,
-                            shrinkWrap: true,
-                            padding: EdgeInsets.zero,
-                            itemCount:
-                                (filter == null ? 1 : 0) +
-                                filteredProviders.length,
-                            itemBuilder: (context, index) {
-                              if (filter == null && index == 0) {
-                                return SizedBox(
-                                  height: 56.0,
-                                  child: Center(
-                                    child: ListTile(
-                                      title: Text(l10n.none),
-                                      leading: const Radio<String?>(
-                                        value: null,
-                                      ),
-                                      autofocus: index == targetIndex,
-                                      onTap: () {
-                                        ref
-                                            .read(
-                                              activeProviderProvider.notifier,
-                                            )
-                                            .set(null);
-                                        Navigator.pop(context);
-                                        ref.invalidate(homeDataProvider);
-                                      },
-                                    ),
-                                  ),
-                                );
-                              }
-
-                              final p =
-                                  filteredProviders[filter == null
-                                      ? index - 1
-                                      : index];
-                              final isDebug = p.isDebug;
-                              final isSubprovider = p.packageName.contains(
-                                '::',
-                              );
-                              String pluginTag = '';
-                              if (isSubprovider) {
-                                final parentPackageName = p.packageName
-                                    .substring(0, p.packageName.indexOf('::'));
-                                final plugin = installedPlugins
-                                    .cast<ExtensionPlugin?>()
-                                    .firstWhere(
-                                      (pl) =>
-                                          pl?.packageName == parentPackageName,
-                                      orElse: () => null,
-                                    );
-                                pluginTag = plugin?.name ?? parentPackageName;
-                              }
-
-                              return SizedBox(
-                                height: 56.0,
-                                child: Center(
-                                  child: ListTile(
-                                    autofocus: index == targetIndex,
-                                    title: Row(
-                                      children: [
-                                        Flexible(
-                                          child: Text(
-                                            p.name,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        if (isSubprovider) ...[
-                                          const SizedBox(width: 8),
-                                          Container(
-                                            constraints: const BoxConstraints(
-                                              maxWidth: 120,
-                                            ),
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.secondaryContainer,
-                                              borderRadius:
-                                                  BorderRadius.circular(4),
-                                            ),
-                                            child: Text(
-                                              pluginTag,
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                color: Theme.of(context)
-                                                    .colorScheme
-                                                    .onSecondaryContainer,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        ],
-                                        if (isDebug) ...[
-                                          const SizedBox(width: 8),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 4,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: Colors.red,
-                                              borderRadius:
-                                                  BorderRadius.circular(4),
-                                            ),
-                                            child: Text(
-                                              l10n.debug,
-                                              style: const TextStyle(
-                                                fontSize: 10,
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                    leading: Radio<String?>(
-                                      value: p.packageName,
-                                    ),
-                                    onTap: () {
-                                      ref
-                                          .read(activeProviderProvider.notifier)
-                                          .set(p);
-                                      Navigator.pop(context);
-                                      ref.invalidate(homeDataProvider);
-                                    },
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            CustomButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(l10n.close),
-            ),
-          ],
-        );
-      },
-    ).then((_) {
-      scrollController.dispose();
-      chipsScrollController.dispose();
-    });
-  }
-
-  String _getLocalizedType(ProviderType type, AppLocalizations l10n) {
-    switch (type) {
-      case ProviderType.movie:
-        return l10n.movies;
-      case ProviderType.series:
-        return l10n.series;
-      case ProviderType.anime:
-        return l10n.anime;
-      case ProviderType.livestream:
-        return l10n.liveStreams;
-      case ProviderType.other:
-        return l10n.unknown;
-    }
+    showProviderSelectorDialog(
+      context,
+      providers: providers,
+      activeProvider: activeProvider,
+    );
   }
 
   Widget _buildCarouselShimmer(BuildContext context) {
@@ -1069,6 +762,348 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               );
             },
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Opens the provider picker. Public only so a widget test can drive the
+/// dialog through a pop mid-transition; [_HomeScreenState] is the caller
+/// that matters and resolves the provider list first.
+@visibleForTesting
+Future<void> showProviderSelectorDialog(
+  BuildContext context, {
+  required List<SkyStreamProvider> providers,
+  required SkyStreamProvider? activeProvider,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _ProviderSelectorDialog(
+      providers: providers,
+      activeProvider: activeProvider,
+    ),
+  );
+}
+
+/// The dialog owns its scroll controllers so they live exactly as long as
+/// its element tree. Creating them in the caller and disposing them once
+/// `showDialog` resolved left the still-animating list and chip row holding
+/// dead controllers - the same lifetime bug that took down the text-input
+/// dialogs, and DesktopScrollWrapper listens on the chip controller.
+class _ProviderSelectorDialog extends StatefulWidget {
+  final List<SkyStreamProvider> providers;
+  final SkyStreamProvider? activeProvider;
+
+  const _ProviderSelectorDialog({
+    required this.providers,
+    required this.activeProvider,
+  });
+
+  @override
+  State<_ProviderSelectorDialog> createState() =>
+      _ProviderSelectorDialogState();
+}
+
+class _ProviderSelectorDialogState extends State<_ProviderSelectorDialog> {
+  final ScrollController _scrollController = ScrollController();
+  final ScrollController _chipsScrollController = ScrollController();
+  bool _didInitialScroll = false;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _chipsScrollController.dispose();
+    super.dispose();
+  }
+
+  String _getLocalizedType(ProviderType type, AppLocalizations l10n) {
+    switch (type) {
+      case ProviderType.movie:
+        return l10n.movies;
+      case ProviderType.series:
+        return l10n.series;
+      case ProviderType.anime:
+        return l10n.anime;
+      case ProviderType.livestream:
+        return l10n.liveStreams;
+      case ProviderType.other:
+        return l10n.unknown;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final providers = widget.providers;
+    final activeProvider = widget.activeProvider;
+
+    return AlertDialog(
+      title: Text(l10n.selectProvider),
+      contentPadding: const EdgeInsets.fromLTRB(0, 20, 0, 0),
+      content: SizedBox(
+        width: 600,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Consumer(
+              builder: (context, ref, _) {
+                final currentFilter = ref.watch(homeFilterProvider);
+                return DesktopScrollWrapper(
+                  controller: _chipsScrollController,
+                  isCompact: true,
+                  child: SingleChildScrollView(
+                    controller: _chipsScrollController,
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      children: [
+                        FilterChip(
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          label: Text(l10n.all),
+                          selected: currentFilter == null,
+                          onSelected: (_) => ref
+                              .read(homeFilterProvider.notifier)
+                              .setFilter(null),
+                        ),
+                        const SizedBox(width: 8),
+                        ...ProviderType.values
+                            .where((t) => t != ProviderType.other)
+                            .map((type) {
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: FilterChip(
+                                  visualDensity: VisualDensity.compact,
+                                  materialTapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  label: Text(_getLocalizedType(type, l10n)),
+                                  selected: currentFilter == type,
+                                  onSelected: (_) => ref
+                                      .read(homeFilterProvider.notifier)
+                                      .setFilter(type),
+                                ),
+                              );
+                            }),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+            const Divider(),
+            Flexible(
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final filter = ref.watch(homeFilterProvider);
+                  final extensionsState = ref.watch(
+                    extensionsControllerProvider,
+                  );
+                  final installedPlugins = extensionsState.installedPlugins;
+
+                  final filteredProviders = filter == null
+                      ? providers
+                      : providers
+                            .where((p) => p.supportedTypes.contains(filter))
+                            .toList();
+
+                  // Auto-scroll to selected provider on initial show
+                  int targetIndex = -1;
+                  if (activeProvider == null) {
+                    if (filter == null) {
+                      targetIndex = 0;
+                    }
+                  } else {
+                    final idx = filteredProviders.indexWhere(
+                      (p) => p.packageName == activeProvider.packageName,
+                    );
+                    if (idx != -1) {
+                      targetIndex = filter == null ? idx + 1 : idx;
+                    } else {
+                      targetIndex = 0;
+                    }
+                  }
+
+                  // If still -1 (e.g. activeProvider == null and filter != null), focus first item
+                  if (targetIndex == -1) targetIndex = 0;
+
+                  if (!_didInitialScroll && targetIndex != -1) {
+                    _didInitialScroll = true;
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (_scrollController.hasClients) {
+                        final itemTop = targetIndex * 56.0;
+                        final viewportHeight =
+                            _scrollController.position.viewportDimension;
+                        const itemHeight = 56.0;
+                        final offset =
+                            itemTop - (viewportHeight / 2) + (itemHeight / 2);
+                        final maxScroll =
+                            _scrollController.position.maxScrollExtent;
+                        _scrollController.jumpTo(offset.clamp(0.0, maxScroll));
+                      }
+                    });
+                  }
+
+                  return RadioGroup<String?>(
+                    groupValue: activeProvider?.packageName,
+                    onChanged: (val) {
+                      final selected = val == null
+                          ? null
+                          : providers.firstWhere((p) => p.packageName == val);
+                      ref.read(activeProviderProvider.notifier).set(selected);
+                      Navigator.pop(context);
+                      ref.invalidate(homeDataProvider);
+                    },
+                    child: Material(
+                      color: Colors.transparent,
+                      clipBehavior: Clip.hardEdge,
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        itemCount:
+                            (filter == null ? 1 : 0) + filteredProviders.length,
+                        itemBuilder: (context, index) {
+                          if (filter == null && index == 0) {
+                            return SizedBox(
+                              height: 56.0,
+                              child: Center(
+                                child: ListTile(
+                                  title: Text(l10n.none),
+                                  leading: const Radio<String?>(value: null),
+                                  autofocus: index == targetIndex,
+                                  onTap: () {
+                                    ref
+                                        .read(activeProviderProvider.notifier)
+                                        .set(null);
+                                    Navigator.pop(context);
+                                    ref.invalidate(homeDataProvider);
+                                  },
+                                ),
+                              ),
+                            );
+                          }
+
+                          final p =
+                              filteredProviders[filter == null
+                                  ? index - 1
+                                  : index];
+                          final isDebug = p.isDebug;
+                          final isSubprovider = p.packageName.contains('::');
+                          String pluginTag = '';
+                          if (isSubprovider) {
+                            final parentPackageName = p.packageName.substring(
+                              0,
+                              p.packageName.indexOf('::'),
+                            );
+                            final plugin = installedPlugins
+                                .cast<ExtensionPlugin?>()
+                                .firstWhere(
+                                  (pl) => pl?.packageName == parentPackageName,
+                                  orElse: () => null,
+                                );
+                            pluginTag = plugin?.name ?? parentPackageName;
+                          }
+
+                          return SizedBox(
+                            height: 56.0,
+                            child: Center(
+                              child: ListTile(
+                                autofocus: index == targetIndex,
+                                title: Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        p.name,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    if (isSubprovider) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 120,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.secondaryContainer,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          pluginTag,
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSecondaryContainer,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                    if (isDebug) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 4,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.red,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          l10n.debug,
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                leading: Radio<String?>(value: p.packageName),
+                                onTap: () {
+                                  ref
+                                      .read(activeProviderProvider.notifier)
+                                      .set(p);
+                                  Navigator.pop(context);
+                                  ref.invalidate(homeDataProvider);
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        CustomButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l10n.close),
         ),
       ],
     );

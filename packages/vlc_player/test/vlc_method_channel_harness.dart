@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vlc_player/src/vlc_player_controller_internals.dart';
 import 'package:vlc_player/vlc_player.dart';
@@ -85,4 +86,18 @@ class VlcMethodChannelHarness {
           .setMockStreamHandler(channel, null);
     }
   }
+}
+
+/// Drives the real lifecycle machinery rather than poking the observer.
+///
+/// `ServicesBinding` generates the intermediate states — resumed to paused is
+/// inactive, hidden, paused — and `AppLifecycleListener` asserts on any
+/// sequence that skips one, so this is also the only honest way to send them.
+Future<void> setAppLifecycleState(AppLifecycleState state) {
+  return TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage(
+        'flutter/lifecycle',
+        const StringCodec().encodeMessage(state.toString()),
+        (_) {},
+      );
 }

@@ -4,6 +4,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart'
 import 'package:skystream/core/domain/entity/multimedia_item.dart';
 import 'package:skystream/features/player/domain/playback_progress.dart';
 import 'package:skystream/features/player/domain/playback_tracker.dart';
+import 'package:skystream/core/storage/episode_watch_repository.dart';
+import 'package:skystream/core/storage/history_repository.dart';
+import 'package:skystream/features/library/presentation/history_provider.dart';
 import 'package:skystream/features/tracking/data/sync_manager.dart';
 
 /// Records dispatches instead of writing to anyone's account.
@@ -48,8 +51,10 @@ class _RecordingSync extends SyncManager {
 void main() {
   late _RecordingSync sync;
 
-  // A series with no resolved episode touches only the sync provider on
-  // completion, which keeps these tests free of storage fakes.
+  // A series with no episode list touches only the sync provider on
+  // completion — the roll-forward cannot locate a current episode, so it makes
+  // no claim about the series either way. That keeps these tests free of
+  // storage fakes; the roll-forward itself is covered below with a real list.
   final item = MultimediaItem(
     title: 'Show',
     url: 'https://example.com/show',
@@ -66,6 +71,7 @@ void main() {
     read: read,
     item: item,
     episode: null,
+    videoUrl: 'https://example.com/show/1',
     token: 3,
   );
 
@@ -130,6 +136,103 @@ void main() {
         ..onPlaying(at(1000, durMs: 100000))
         ..onPlaying(at(95000, durMs: 3600000));
       expect(sync.calls, <String>['scrobbleStart']);
+    });
+  });
+
+  group('history roll-forward at completion', () {
+    // Crossing 90% is when the viewer is done with this episode, and the
+    // credits are exactly when they back out. Leaving the rollover to
+    // end-of-media left Continue Watching offering the finished episode
+    // at 92%.
+    final episodes = [
+      Episode(name: 'One', url: 'https://ex/e1', season: 1, episode: 1),
+      Episode(name: 'Two', url: 'https://ex/e2', season: 1, episode: 2),
+    ];
+    final series = MultimediaItem(
+      title: 'Show',
+      url: 'https://ex/show',
+      posterUrl: '',
+      contentType: MultimediaContentType.series,
+      episodes: episodes,
+    );
+    final film = MultimediaItem(
+      title: 'Film',
+      url: 'https://ex/film',
+      posterUrl: '',
+      contentType: MultimediaContentType.movie,
+    );
+
+    late _RecordingHistory history;
+    late _StubEpisodeWatch episodeWatch;
+
+    PlaybackTracker trackerFor(
+      MultimediaItem item, {
+      Episode? episode,
+      String videoUrl = '',
+    }) => PlaybackTracker(
+      // Completion touches four providers. Dispatching on the requested type
+      // keeps the fakes honest: anything unexpected throws rather than
+      // silently answering with the wrong one.
+      read: <T>(provider) {
+        if (identical(provider, syncManagerProvider)) return sync as T;
+        if (history is T) return history as T;
+        if (episodeWatch is T) return episodeWatch as T;
+        return _StubHistoryRepo() as T;
+      },
+      item: item,
+      episode: episode,
+      videoUrl: videoUrl,
+      token: 3,
+    );
+
+    void complete(PlaybackTracker t) => t
+      ..onPlaying(at(1000))
+      ..onPlaying(at(2000))
+      ..onPlaying(at(3400000));
+
+    setUp(() {
+      history = _RecordingHistory();
+      episodeWatch = _StubEpisodeWatch();
+    });
+
+    test('points Continue Watching at the next episode', () {
+      complete(trackerFor(series, episode: episodes.first));
+      expect(history.savedEpisodeUrls, <String>['https://ex/e2']);
+      expect(history.removed, isEmpty);
+    });
+
+    test('drops the series only once the last episode is located', () {
+      complete(trackerFor(series, episode: episodes.last));
+      expect(history.savedEpisodeUrls, isEmpty);
+      expect(history.removed, <String>['https://ex/show']);
+    });
+
+    test('an unlocatable episode makes no claim about the series', () {
+      // removeFromHistory cascades over every per-episode row for the title,
+      // so "cannot find the current episode" must never reach it.
+      complete(
+        trackerFor(
+          series,
+          episode: Episode(name: 'Ghost', url: 'https://ex/e99'),
+          videoUrl: 'https://ex/e99',
+        ),
+      );
+      expect(history.savedEpisodeUrls, isEmpty);
+      expect(history.removed, isEmpty);
+    });
+
+    test('a finished film leaves Continue Watching', () {
+      complete(trackerFor(film));
+      expect(history.removed, <String>['https://ex/film']);
+    });
+
+    test('rolls forward once, however many samples cross the line', () {
+      final t = trackerFor(series, episode: episodes.first);
+      complete(t);
+      t
+        ..onPlaying(at(3500000))
+        ..onPlaying(at(3590000));
+      expect(history.savedEpisodeUrls, hasLength(1));
     });
   });
 
@@ -202,4 +305,70 @@ void main() {
       expect(sync.calls, isEmpty);
     });
   });
+}
+
+/// Records the history writes completion makes, without touching Hive.
+class _RecordingHistory implements WatchHistory {
+  final List<String> savedEpisodeUrls = <String>[];
+  final List<String> removed = <String>[];
+
+  @override
+  Future<void> saveProgress(
+    MultimediaItem item,
+    int position,
+    int duration, {
+    String? lastStreamUrl,
+    String? lastEpisodeUrl,
+    int? season,
+    int? episode,
+    String? episodeTitle,
+    String? episodePosterUrl,
+  }) async {
+    savedEpisodeUrls.add(lastEpisodeUrl ?? '');
+  }
+
+  @override
+  Future<void> removeFromHistory(String url) async => removed.add(url);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('not needed: ${invocation.memberName}');
+}
+
+/// rollForwardHistory reads the next episode's stored numbers back before
+/// rewriting them; an empty row is all these tests need.
+class _StubHistoryRepo implements HistoryRepository {
+  @override
+  int getEpisodePosition(
+    String url, {
+    String? mainUrl,
+    int? season,
+    int? episode,
+  }) => 0;
+
+  @override
+  int getEpisodeDuration(
+    String url, {
+    String? mainUrl,
+    int? season,
+    int? episode,
+  }) => 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('not needed: ${invocation.memberName}');
+}
+
+/// Swallows the local watched flag; the assertions are about history.
+class _StubEpisodeWatch implements EpisodeWatchRepository {
+  @override
+  Future<void> setWatched(
+    String mainUrl,
+    Episode episode,
+    bool watched,
+  ) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('not needed: ${invocation.memberName}');
 }

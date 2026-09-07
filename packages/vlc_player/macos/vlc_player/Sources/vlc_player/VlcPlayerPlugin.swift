@@ -4,11 +4,22 @@ import VLCKit
 
 public class VlcPlayerPlugin: NSObject, FlutterPlugin {
   private let messenger: FlutterBinaryMessenger
+  private let textures: FlutterTextureRegistry
   private let methodChannel: FlutterMethodChannel
   private var players: [Int64: VlcPlayerPlatformView] = [:]
 
+  /// Texture players get their ids from here, counting down from -1.
+  ///
+  /// Platform-view players are keyed by the id Flutter assigned their view,
+  /// which is always non-negative, so the two id spaces cannot collide even
+  /// though a host is free to mix both renderers.
+  private var nextTextureViewId: Int64 = -1
+
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let instance = VlcPlayerPlugin(binaryMessenger: registrar.messenger)
+    let instance = VlcPlayerPlugin(
+      binaryMessenger: registrar.messenger,
+      textures: registrar.textures
+    )
     let factory = VlcPlayerViewFactory(messenger: registrar.messenger) { [weak instance] viewId, player in
       instance?.players.removeValue(forKey: viewId)?.dispose()
       instance?.players[viewId] = player
@@ -18,13 +29,21 @@ public class VlcPlayerPlugin: NSObject, FlutterPlugin {
     registrar.register(factory, withId: "plugins.lingjhf.com/vlc_player/view")
   }
 
-  init(binaryMessenger: FlutterBinaryMessenger) {
+  init(binaryMessenger: FlutterBinaryMessenger, textures: FlutterTextureRegistry) {
     messenger = binaryMessenger
+    self.textures = textures
     methodChannel = FlutterMethodChannel(name: "vlc_player", binaryMessenger: binaryMessenger)
     super.init()
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    // Deliberately ahead of the viewId guard: `create` is the call that mints
+    // one, so it is the only method that arrives without it.
+    if call.method == "create" {
+      createTexturePlayer(arguments: call.arguments as? [String: Any] ?? [:], result: result)
+      return
+    }
+
     guard let arguments = call.arguments as? [String: Any],
           let viewId = Self.int64Value(arguments["viewId"]) else {
       result(FlutterError(code: "invalid_args", message: "A valid viewId is required.", details: nil))
@@ -186,9 +205,53 @@ public class VlcPlayerPlugin: NSObject, FlutterPlugin {
     }
   }
 
+  /// Builds a texture-backed player and hands Dart both ids it needs.
+  ///
+  /// Mirrors the Windows plugin's `create`: the widget has no platform view to
+  /// wait on, so the reply carries the viewId every later call is keyed by and
+  /// the textureId the `Texture` widget renders.
+  private func createTexturePlayer(arguments: [String: Any], result: @escaping FlutterResult) {
+    let create = {
+      let options = arguments["options"] as? [String] ?? []
+      let viewId = self.nextTextureViewId
+      self.nextTextureViewId -= 1
+
+      let player = VlcPlayerPlatformView(
+        viewId: viewId,
+        messenger: self.messenger,
+        options: options,
+        target: .texture
+      )
+      guard let renderer = player.textureRenderer else {
+        player.dispose()
+        result(FlutterError(code: "create_failed", message: "Unable to attach a vlc_player texture.", details: nil))
+        return
+      }
+
+      let textureId = self.textures.register(renderer)
+      renderer.onFrameAvailable = { [weak self] in
+        self?.textures.textureFrameAvailable(textureId)
+      }
+      player.textureId = textureId
+      self.players[viewId] = player
+      result(["viewId": viewId, "textureId": textureId])
+    }
+    if Thread.isMainThread {
+      create()
+    } else {
+      DispatchQueue.main.async(execute: create)
+    }
+  }
+
   private func disposePlayer(viewId: Int64, result: FlutterResult? = nil) {
     let dispose = {
-      self.players.removeValue(forKey: viewId)?.dispose()
+      let player = self.players.removeValue(forKey: viewId)
+      // Before dispose(), so the engine stops asking a detached renderer for
+      // frames rather than after it has already been silenced.
+      if let textureId = player?.textureId {
+        self.textures.unregisterTexture(textureId)
+      }
+      player?.dispose()
       result?(nil)
     }
     if Thread.isMainThread {
@@ -240,14 +303,17 @@ final class VlcPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
   func create(withViewIdentifier viewId: Int64, arguments args: Any?) -> NSView {
     let options = (args as? [String: Any])?["options"] as? [String] ?? []
     let fit = (args as? [String: Any])?["fit"] as? String ?? "contain"
+    // The factory owns the view it has to hand back, so the player never has
+    // to expose an optional one for the texture case to leave nil.
+    let container = VlcPlayerContainerView()
     let platformView = VlcPlayerPlatformView(
       viewId: viewId,
       messenger: messenger,
       options: options,
-      fit: fit
+      target: .appKitView(container, fit: fit)
     )
     onCreate(viewId, platformView)
-    return platformView.view
+    return container
   }
 
   func createArgsCodec() -> (FlutterMessageCodec & NSObjectProtocol)? {
@@ -255,28 +321,65 @@ final class VlcPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
   }
 }
 
-final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
-  let view: VlcPlayerContainerView
+/// Where a player puts its pixels.
+///
+/// macOS supports both. The Flutter texture is the default since 2026-09-06:
+/// an AppKitView makes the embedder composite every Flutter layer above it as
+/// a separate surface, and any repaint of one dropped the video for a frame.
+/// The view stays selectable through `VlcPlayerConfig.darwinRenderer`.
+enum VlcRenderTarget {
+  case appKitView(VlcPlayerContainerView, fit: String)
+  case texture
+}
 
+final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
+  /// The registered Flutter texture id, set by the plugin after it registers
+  /// `textureRenderer`. Nil for view-backed players.
+  var textureId: Int64?
+
+  private let renderTarget: VlcRenderTarget
+  private(set) var textureRenderer: VlcTextureRenderer?
   private let mediaPlayer: VLCMediaPlayer
   private let eventChannel: FlutterEventChannel
   private let eventHandler = VlcPlayerEventStreamHandler()
   private var lastSentEvent: NSDictionary?
+  /// Bumped whenever the audio + subtitle track SET changes. VLCKit has no
+  /// per-ES delegate callback (only the `.esAdded` state, which does not say
+  /// which kind of stream moved), so every snapshot diffs a fingerprint of
+  /// the two lists instead.
+  ///
+  /// The fingerprint replaced a plain count, which could not see a same-size
+  /// swap: an adaptive rendition change or an MPEG-TS PMT update replaces the
+  /// tracks without changing how many there are, and a consumer that caches
+  /// getAudioTracks() / getSubtitleTracks() off this counter was left drawing
+  /// the previous names with nothing ticked, because the active id it matches
+  /// no longer exists.
+  private var trackRevision = 0
+  private var lastTrackFingerprint: UInt64?
   private(set) var isDisposed = false
 
   init(
     viewId: Int64,
     messenger: FlutterBinaryMessenger,
     options: [String],
-    fit: String
+    target: VlcRenderTarget
   ) {
-    view = VlcPlayerContainerView()
+    renderTarget = target
     mediaPlayer = VLCMediaPlayer(options: options)
     eventChannel = FlutterEventChannel(name: "vlc_player/events/\(viewId)", binaryMessenger: messenger)
+
+    switch target {
+    case let .appKitView(container, fit):
+      Self.applyFit(fit, to: container)
+      mediaPlayer.drawable = container
+    case .texture:
+      // Installed before any media is set: libVLC settles its video output
+      // when playback starts, and callbacks added after that are ignored.
+      textureRenderer = VlcTextureRenderer(mediaPlayer: mediaPlayer)
+    }
+
     super.init()
 
-    Self.applyFit(fit, to: view)
-    mediaPlayer.drawable = view
     mediaPlayer.delegate = self
     eventHandler.onListen = { [weak self] in
       self?.sendSnapshot(force: true)
@@ -397,6 +500,8 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
       return false
     }
     mediaPlayer.currentAudioTrackIndex = Int32(id)
+    // No ES delegate callback tells us the switch landed; publish it now.
+    sendSnapshot(force: true)
     return true
   }
 
@@ -409,11 +514,13 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
       return false
     }
     mediaPlayer.currentVideoSubTitleIndex = Int32(id)
+    sendSnapshot(force: true)
     return true
   }
 
   func disableSubtitle() {
     mediaPlayer.currentVideoSubTitleIndex = -1
+    sendSnapshot(force: true)
   }
 
   func addSubtitle(_ uri: String, result: @escaping FlutterResult) {
@@ -426,6 +533,15 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
       result(FlutterError(code: "add_subtitle_failed", message: "Failed to add subtitle: \(uri)", details: status))
       return
     }
+    // Unlike the three selection mutations above, this one cannot report its
+    // own result: libVLC 3 posts an added slave to the input thread, so a
+    // zero status only means the slave was accepted and this snapshot still
+    // carries the pre-add track lists. It is forced to keep the rest of the
+    // payload fresh, not to announce the subtitle. VLCKit surfaces the new
+    // elementary stream as a `.esAdded` state change, and the snapshot sent
+    // from there is the one whose trackFingerprint moves trackRevision -
+    // which is what a caller has to wait on, not this result.
+    sendSnapshot(force: true)
     result(nil)
   }
 
@@ -477,6 +593,10 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
     mediaPlayer.delegate = nil
     mediaPlayer.stop()
     mediaPlayer.drawable = nil
+    // After stop(), so libVLC has no vout left that could call into a
+    // renderer whose buffers are already gone.
+    textureRenderer?.detach()
+    textureRenderer = nil
   }
 
   func mediaPlayerStateChanged(_ aNotification: Notification) {
@@ -510,6 +630,11 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
     let stateName = stateOverride ?? Self.stateName(mediaPlayer)
     let duration = Self.milliseconds(from: mediaPlayer.media?.length)
     let isSeekable = mediaPlayer.isSeekable
+    let trackFingerprint = Self.trackFingerprint(mediaPlayer)
+    if trackFingerprint != lastTrackFingerprint {
+      lastTrackFingerprint = trackFingerprint
+      trackRevision += 1
+    }
     var event: [String: Any] = [
       "state": stateName,
       "position": Self.milliseconds(from: mediaPlayer.time),
@@ -518,12 +643,23 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
       "playbackSpeed": Double(mediaPlayer.rate),
       "audioDelay": Int(mediaPlayer.currentAudioPlaybackDelay),
       "subtitleDelay": Int(mediaPlayer.currentVideoSubTitleDelay),
+      // -1 when there is none / subtitles are off; Dart normalises to null.
+      "audioTrack": Int(mediaPlayer.currentAudioTrackIndex),
+      "subtitleTrack": Int(mediaPlayer.currentVideoSubTitleIndex),
+      "trackRevision": trackRevision,
       "isReady": Self.isReadyState(stateName),
       "isSeekable": isSeekable,
       "isLive": Self.isLiveState(stateName) && duration == 0 && !isSeekable,
     ]
     if let videoSize = Self.videoSizeMap(mediaPlayer.videoSize) {
       event["videoSize"] = videoSize
+    }
+    // The texture is the decoder's padded buffer, not the visible picture;
+    // Dart clips the difference. Absent for view-backed players, whose
+    // drawable already crops.
+    if let renderer = textureRenderer,
+       let codedSize = Self.videoSizeMap(renderer.codedSize) {
+      event["codedSize"] = codedSize
     }
     if let errorDescription {
       event["errorCode"] = errorCode ?? "playback_error"
@@ -575,7 +711,12 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 
   func setFit(_ fit: String) {
-    Self.applyFit(fit, to: view)
+    // A texture-backed player is fitted in Dart, by the widget that owns the
+    // Texture, so there is nothing to push down here.
+    guard case let .appKitView(container, _) = renderTarget else {
+      return
+    }
+    Self.applyFit(fit, to: container)
   }
 
   private static func applyFit(_ fit: String, to view: VLCVideoView) {
@@ -592,6 +733,42 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
         "language": nil,
       ]
     }
+  }
+
+  /// An order-sensitive FNV-1a fingerprint of the audio + subtitle track set.
+  ///
+  /// Not a security hash: it only has to make two different track lists land
+  /// on two different numbers, and it only ever gets compared against the
+  /// previous snapshot's value inside this process.
+  private static func trackFingerprint(_ mediaPlayer: VLCMediaPlayer) -> UInt64 {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    func fold(_ byte: UInt8) {
+      hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+    }
+    func fold(indexes: [Any]?, names: [Any]?) {
+      let trackIndexes = indexes as? [NSNumber] ?? []
+      let trackNames = names as? [String] ?? []
+      // A list separator, so an id that moves from the audio list to the
+      // subtitle list cannot leave the fingerprint where it was.
+      fold(0x1f)
+      for (offset, index) in trackIndexes.enumerated() {
+        withUnsafeBytes(of: Int32(truncatingIfNeeded: index.intValue)) { bytes in
+          for byte in bytes {
+            fold(byte)
+          }
+        }
+        if offset < trackNames.count {
+          for byte in trackNames[offset].utf8 {
+            fold(byte)
+          }
+        }
+        // A record separator, so ("a", "bc") and ("ab", "c") differ.
+        fold(0x1e)
+      }
+    }
+    fold(indexes: mediaPlayer.audioTrackIndexes, names: mediaPlayer.audioTrackNames)
+    fold(indexes: mediaPlayer.videoSubTitlesIndexes, names: mediaPlayer.videoSubTitlesNames)
+    return hash
   }
 
   private func trackIndexes(_ indexes: [Any]?) -> Set<Int> {
@@ -698,7 +875,43 @@ final class VlcPlayerPlatformView: NSObject, VLCMediaPlayerDelegate {
   }
 }
 
-final class VlcPlayerContainerView: VLCVideoView {}
+final class VlcPlayerContainerView: VLCVideoView {
+  #if DEBUG
+  // Flicker hunt. If these fire while the pointer merely moves over the
+  // Flutter chrome, the embedder is re-laying-out the platform view on every
+  // overlay change and VLCKit is redrawing black on reshape - a different
+  // cause from overlay-surface churn, with a different fix. Filter the
+  // console on "VLCVIEW".
+  private static var geometryEvents = 0
+
+  private func trace(_ what: String) {
+    VlcPlayerContainerView.geometryEvents += 1
+    NSLog("VLCVIEW #%d %@ frame=%@ window=%@",
+          VlcPlayerContainerView.geometryEvents, what,
+          NSStringFromRect(frame), window == nil ? "nil" : "set")
+  }
+
+  override func layout() {
+    trace("layout")
+    super.layout()
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    trace("setFrameSize \(Int(newSize.width))x\(Int(newSize.height))")
+    super.setFrameSize(newSize)
+  }
+
+  override func viewDidMoveToWindow() {
+    trace("viewDidMoveToWindow")
+    super.viewDidMoveToWindow()
+  }
+
+  override func viewDidChangeBackingProperties() {
+    trace("viewDidChangeBackingProperties")
+    super.viewDidChangeBackingProperties()
+  }
+  #endif
+}
 
 final class VlcPlayerEventStreamHandler: NSObject, FlutterStreamHandler {
   private var eventSink: FlutterEventSink?

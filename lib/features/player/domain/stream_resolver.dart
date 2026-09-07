@@ -38,6 +38,7 @@ import '../../../core/storage/history_repository.dart';
 import '../../../core/network/http_defaults.dart';
 import '../../../core/utils/app_utils.dart';
 import '../../../core/utils/stream_quality_sorter.dart';
+import '../../../l10n/generated/app_localizations.dart';
 import '../../library/presentation/history_provider.dart';
 import '../../settings/presentation/player_settings_provider.dart';
 
@@ -114,11 +115,34 @@ bool isTorrentSource(StreamResult stream) =>
     stream.url.endsWith('.torrent') ||
     (stream.url.startsWith('/') && stream.source.contains('Torrent'));
 
+/// A URL that names itself as on-demand. Vetoes [_liveUrlShapes], because those
+/// are guesses and this is the source saying what it is: Xtream Codes serves
+/// VOD from `/movie/` and `/series/`, and Wowza's on-demand HLS lives under
+/// `/vod/` while still being cut into `chunklist_*.m3u8` files.
+final RegExp _vodMarkers = RegExp(r'/(vod|movies?|series)/');
+
+/// URL shapes that in practice only IPTV and live packagers produce.
+///
+/// Deliberately narrower than "ends in .m3u8" — a VOD HLS ladder is also
+/// `.m3u8`, and calling those live would kill seeking and resume across a large
+/// slice of ordinary content. So: the path segments IPTV portals mount channels
+/// under, the two live-edge playlist names (`stream.m3u8` from most origins,
+/// `chunklist` from Wowza), and the Xtream Codes query that asks for a channel
+/// list rather than a file.
+final RegExp _liveUrlShapes = RegExp(
+  r'/live/|/iptv/|stream\.m3u8|chunklist|(type|output)=m3u8',
+);
+
 /// Whether this source should be treated as live.
 ///
 /// Mirrors the old controller's `_isLiveStream`: the item's own content type
-/// wins, then the URL scheme. Torrents and local files are always VOD however
-/// they are labelled.
+/// wins, then the URL scheme, then the URL's shape. Torrents and local files
+/// are always VOD however they are labelled.
+///
+/// The URL-shape pass matters because plugins routinely hand back an IPTV feed
+/// typed as `movie`. Without it that stream gets VOD caching instead of
+/// `:live-caching`, writes progress against a duration that means nothing, and
+/// on a drop takes the end-of-media branch instead of reconnecting.
 ///
 /// Liveness changes buffering, seeking, progress writing and what end-of-media
 /// means, so it is decided once from data both engines can see rather than
@@ -132,20 +156,75 @@ bool isLiveSource(MultimediaItem item, String url) {
     return false;
   }
   if (item.contentType == MultimediaContentType.livestream) return true;
-  return lower.startsWith('rtmp://') ||
+  if (lower.startsWith('rtmp://') ||
       lower.startsWith('rtsp://') ||
       lower.startsWith('mms://') ||
       lower.startsWith('udp://') ||
-      lower.startsWith('rtp://');
+      lower.startsWith('rtp://')) {
+    return true;
+  }
+  if (_vodMarkers.hasMatch(lower)) return false;
+  return _liveUrlShapes.hasMatch(lower);
+}
+
+/// Why resolution gave up, as a code the UI can localize.
+///
+/// Resolution runs with no BuildContext — it is called from the screen's
+/// initState chain and from tests — so it cannot produce a translated string
+/// itself. It names the failure instead and [describeStreamFailure] renders it.
+enum StreamResolutionFailure {
+  noProvider,
+  nothingToPlay,
+  loadFailed,
+  cancelled,
+  noStreams,
 }
 
 /// Resolution failed in a way worth showing the user.
 class StreamResolutionException implements Exception {
-  const StreamResolutionException(this.message);
-  final String message;
+  const StreamResolutionException(this.failure, {this.detail});
+
+  final StreamResolutionFailure failure;
+
+  /// The underlying error text, when there is one worth passing on.
+  final String? detail;
+
+  /// The developer-facing form: what lands in logs and `toString()`. Derived
+  /// from [failure] rather than passed in, so a diagnostic can never describe
+  /// a different failure from the one the viewer is shown. English on purpose
+  /// — [describeStreamFailure] is what the viewer sees.
+  String get message => switch (failure) {
+    StreamResolutionFailure.noProvider => 'No provider selected.',
+    StreamResolutionFailure.nothingToPlay => 'Nothing to play.',
+    StreamResolutionFailure.loadFailed => 'Could not load sources: $detail',
+    StreamResolutionFailure.cancelled => 'Cancelled.',
+    StreamResolutionFailure.noStreams => 'No streams found.',
+  };
+
   @override
   String toString() => message;
 }
+
+/// The viewer-facing wording for a failed resolution.
+String describeStreamFailure(
+  AppLocalizations l10n,
+  StreamResolutionException failure,
+) => switch (failure.failure) {
+  StreamResolutionFailure.noProvider => l10n.playerNoProviderSelected,
+  StreamResolutionFailure.nothingToPlay => l10n.playerNothingToPlay,
+  StreamResolutionFailure.loadFailed => l10n.playerCouldNotLoadSources(
+    failure.detail ?? '',
+  ),
+  StreamResolutionFailure.cancelled => l10n.playerResolutionCancelled,
+  StreamResolutionFailure.noStreams => l10n.playerNoStreamsFound,
+};
+
+/// Where one candidate's health probe has got to.
+///
+/// [trying] is reported when the probe is dispatched rather than when it
+/// answers, because the probe is a parallel race and "which of these are we
+/// waiting on" is the only question a viewer staring at a spinner has.
+enum ProbeOutcome { trying, healthy, unhealthy }
 
 /// Resolves [videoUrl] for [item] into playable streams.
 ///
@@ -156,6 +235,18 @@ class StreamResolutionException implements Exception {
 /// and returns the first healthy one, so a dead link fails over before the
 /// engine ever sees it instead of spinning on a connect timeout. Pass 0 to
 /// skip probing.
+///
+/// Resolution is otherwise a single Future that answers once, which left the
+/// UI with nothing to say for however long the plugin call and the probe took.
+/// [onCandidates] fires as soon as the ordered list exists — indices in every
+/// later report and in [ResolvedPlayback] are indices into exactly that list —
+/// and [onProbe] fires for each candidate as it is dispatched and again as it
+/// settles. Both are optional and neither changes what is resolved.
+///
+/// [stopProbing] is the viewer saying "stop waiting": completing it ends the
+/// race early with the best answer the probes have actually produced, which is
+/// the preferred candidate when they have produced none. Distinct from
+/// [isCancelled], which abandons resolution altogether.
 Future<ResolvedPlayback> resolvePlayback({
   required ProviderReader read,
   required MultimediaItem item,
@@ -163,19 +254,26 @@ Future<ResolvedPlayback> resolvePlayback({
   List<StreamResult>? preloadedStreams,
   int probeCandidates = 3,
   bool Function()? isCancelled,
+  void Function(List<StreamResult> streams)? onCandidates,
+  void Function(int index, ProbeOutcome outcome)? onProbe,
+  Future<void>? stopProbing,
 }) async {
   final direct = _directStream(item, videoUrl);
   if (direct != null) {
-    return ResolvedPlayback(streams: [direct], index: 0);
+    final streams = [direct];
+    onCandidates?.call(streams);
+    return ResolvedPlayback(streams: streams, index: 0);
   }
 
   final preloaded = preloadedStreams ?? const <StreamResult>[];
   final provider = _resolveProvider(read, item);
   if (provider == null && preloaded.isEmpty) {
-    throw const StreamResolutionException('No provider selected.');
+    throw const StreamResolutionException(StreamResolutionFailure.noProvider);
   }
   if (videoUrl.isEmpty && preloaded.isEmpty) {
-    throw const StreamResolutionException('Nothing to play.');
+    throw const StreamResolutionException(
+      StreamResolutionFailure.nothingToPlay,
+    );
   }
 
   List<StreamResult> raw;
@@ -185,14 +283,17 @@ Future<ResolvedPlayback> resolvePlayback({
     try {
       raw = await provider!.loadStreams(videoUrl);
     } catch (e) {
-      throw StreamResolutionException('Could not load sources: $e');
+      throw StreamResolutionException(
+        StreamResolutionFailure.loadFailed,
+        detail: '$e',
+      );
     }
   }
   if (isCancelled?.call() ?? false) {
-    throw const StreamResolutionException('Cancelled.');
+    throw const StreamResolutionException(StreamResolutionFailure.cancelled);
   }
   if (raw.isEmpty) {
-    throw const StreamResolutionException('No streams found.');
+    throw const StreamResolutionException(StreamResolutionFailure.noStreams);
   }
 
   var didFallback = false;
@@ -201,8 +302,9 @@ Future<ResolvedPlayback> resolvePlayback({
       ? raw
       : await _byQuality(raw, settings, (v) => didFallback = v);
   if (streams.isEmpty) {
-    throw const StreamResolutionException('No streams found.');
+    throw const StreamResolutionException(StreamResolutionFailure.noStreams);
   }
+  onCandidates?.call(streams);
 
   final saved = _savedStreamIndex(read, item, streams);
   final index = probeCandidates <= 1
@@ -212,6 +314,8 @@ Future<ResolvedPlayback> resolvePlayback({
           startIndex: saved,
           limit: probeCandidates,
           isCancelled: isCancelled,
+          onProbe: onProbe,
+          stopProbing: stopProbing,
         );
 
   return ResolvedPlayback(
@@ -303,9 +407,9 @@ int _savedStreamIndex(
     if (isSeries) {
       lastUrl = read(historyRepositoryProvider).getLastStreamUrl(item.url);
     }
-    lastUrl ??= read(watchHistoryProvider)
-        .firstWhereOrNull((h) => h.item.url == item.url)
-        ?.lastStreamUrl;
+    lastUrl ??= read(
+      watchHistoryProvider,
+    ).firstWhereOrNull((h) => h.item.url == item.url)?.lastStreamUrl;
 
     if (lastUrl != null) {
       final found = streams.indexWhere((s) => s.url == lastUrl);
@@ -326,6 +430,8 @@ Future<int> _firstHealthyStream(
   required int startIndex,
   required int limit,
   bool Function()? isCancelled,
+  void Function(int index, ProbeOutcome outcome)? onProbe,
+  Future<void>? stopProbing,
 }) async {
   if (streams.isEmpty) return 0;
   final start = startIndex.clamp(0, streams.length - 1);
@@ -340,7 +446,20 @@ Future<int> _firstHealthyStream(
   final completer = Completer<int>();
   final results = <int, bool>{};
 
+  /// The best answer the race has actually produced. [start] when it has
+  /// produced none, which is the same fallback an all-failed race takes.
+  int bestSoFar() {
+    for (final c in candidates) {
+      if (results[c] ?? false) return c;
+    }
+    return start;
+  }
+
   void record(int idx, bool healthy) {
+    // Reported before the completion guard, so a candidate that answers after
+    // the race is over still explains itself rather than staying "trying" on
+    // screen forever.
+    onProbe?.call(idx, healthy ? ProbeOutcome.healthy : ProbeOutcome.unhealthy);
     if (completer.isCompleted) return;
     results[idx] = healthy;
     for (final c in candidates) {
@@ -353,11 +472,22 @@ Future<int> _firstHealthyStream(
     completer.complete(start); // everything failed
   }
 
-  for (final idx in candidates) {
+  // Armed before the probes are dispatched: a skip that has already happened
+  // must win the race rather than lose it by a microtask.
+  if (stopProbing != null) {
     unawaited(
-      _isHealthy(streams[idx])
-          .then((h) => record(idx, h))
-          .catchError((_) => record(idx, false)),
+      stopProbing.then((_) {
+        if (!completer.isCompleted) completer.complete(bestSoFar());
+      }),
+    );
+  }
+
+  for (final idx in candidates) {
+    onProbe?.call(idx, ProbeOutcome.trying);
+    unawaited(
+      _isHealthy(
+        streams[idx],
+      ).then((h) => record(idx, h)).catchError((_) => record(idx, false)),
     );
   }
 

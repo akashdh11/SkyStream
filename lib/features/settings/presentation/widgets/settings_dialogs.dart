@@ -859,160 +859,165 @@ void showDefaultPlayerDialog(
 
 /// Shows a dialog to pick the DNS-over-HTTPS provider.
 void showDohProviderDialog(BuildContext context, WidgetRef ref) {
-  final l10n = AppLocalizations.of(context)!;
-  final initialSettings = ref.read(dohSettingsProvider).asData?.value;
-  var currentProvider = initialSettings?.provider ?? DohProvider.cloudflare;
-  final controller = TextEditingController(
-    text: initialSettings?.customUrl ?? '',
-  );
-
   showDialog<void>(
     context: context,
-    builder: (ctx) {
-      void saveAndClose(DohProvider p, [String? customUrl]) {
-        ref.read(dohSettingsProvider.notifier).setProvider(p);
-        if (p == DohProvider.custom && customUrl != null) {
-          ref.read(dohSettingsProvider.notifier).setCustomUrl(customUrl);
-        }
-        ref.read(dohSettingsProvider.notifier).clearCache();
-        Navigator.pop<void>(ctx);
-      }
+    builder: (_) => const _DohProviderDialog(),
+  );
+}
 
-      return StatefulBuilder(
-        builder: (context, setState) {
-          return AlertDialog(
-            surfaceTintColor: Colors.transparent,
-            title: Text(l10n.dohProvider),
-            content: SingleChildScrollView(
-              child: RadioGroup<DohProvider>(
-                groupValue: currentProvider,
-                onChanged: (val) {
-                  if (val == null) return;
-                  if (val == DohProvider.custom) {
-                    setState(() => currentProvider = val);
-                  } else {
-                    saveAndClose(val);
-                  }
-                },
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ListTile(
-                      title: Text(l10n.cloudflare),
-                      subtitle: const Text('1.1.1.1'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.cloudflare,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.cloudflare),
-                    ),
-                    ListTile(
-                      title: Text(l10n.google),
-                      subtitle: const Text('8.8.8.8'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.google,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.google),
-                    ),
-                    ListTile(
-                      title: Text(l10n.adguard),
-                      subtitle: const Text('dns.adguard.com'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.adguard,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.adguard),
-                    ),
-                    ListTile(
-                      title: Text(l10n.dnsWatch),
-                      subtitle: const Text('resolver2.dns.watch'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.dnsWatch,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.dnsWatch),
-                    ),
-                    ListTile(
-                      title: Text(l10n.quad9),
-                      subtitle: const Text('9.9.9.9'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.quad9,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.quad9),
-                    ),
-                    ListTile(
-                      title: Text(l10n.dnsSb),
-                      subtitle: const Text('doh.dns.sb'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.dnsSb,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.dnsSb),
-                    ),
-                    ListTile(
-                      title: Text(l10n.canadianShield),
-                      subtitle: const Text('private.canadianshield.cira.ca'),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.canadianShield,
-                      ),
-                      onTap: () => saveAndClose(DohProvider.canadianShield),
-                    ),
-                    ListTile(
-                      title: Text(l10n.custom),
-                      subtitle: Text(l10n.enterCustomDohUrl),
-                      leading: const Radio<DohProvider>(
-                        value: DohProvider.custom,
-                      ),
-                      onTap: () =>
-                          setState(() => currentProvider = DohProvider.custom),
-                    ),
-                    if (currentProvider == DohProvider.custom)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16.0,
-                          vertical: 8.0,
-                        ),
-                        child: CustomTextField(
-                          controller: controller,
-                          autofocus: true,
-                          decoration: InputDecoration(
-                            labelText: l10n.customDohUrlLabel,
-                            hintText: 'https://...',
-                            prefixIcon: const Icon(
-                              Icons.link_rounded,
-                              size: 20,
-                            ),
-                          ),
-                          keyboardType: TextInputType.url,
-                        ),
-                      ),
-                  ],
+class _DohProviderDialog extends ConsumerStatefulWidget {
+  const _DohProviderDialog();
+
+  @override
+  ConsumerState<_DohProviderDialog> createState() => _DohProviderDialogState();
+}
+
+class _DohProviderDialogState extends ConsumerState<_DohProviderDialog> {
+  late DohProvider _currentProvider;
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialSettings = ref.read(dohSettingsProvider).asData?.value;
+    _currentProvider = initialSettings?.provider ?? DohProvider.cloudflare;
+    _controller = TextEditingController(text: initialSettings?.customUrl ?? '');
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _saveAndClose(DohProvider p, [String? customUrl]) {
+    ref.read(dohSettingsProvider.notifier).setProvider(p);
+    if (p == DohProvider.custom && customUrl != null) {
+      ref.read(dohSettingsProvider.notifier).setCustomUrl(customUrl);
+    }
+    ref.read(dohSettingsProvider.notifier).clearCache();
+    Navigator.pop<void>(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+
+    return AlertDialog(
+      surfaceTintColor: Colors.transparent,
+      title: Text(l10n.dohProvider),
+      content: SingleChildScrollView(
+        child: RadioGroup<DohProvider>(
+          groupValue: _currentProvider,
+          onChanged: (val) {
+            if (val == null) return;
+            if (val == DohProvider.custom) {
+              setState(() => _currentProvider = val);
+            } else {
+              _saveAndClose(val);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: Text(l10n.cloudflare),
+                subtitle: const Text('1.1.1.1'),
+                leading: const Radio<DohProvider>(
+                  value: DohProvider.cloudflare,
                 ),
+                onTap: () => _saveAndClose(DohProvider.cloudflare),
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop<void>(ctx),
-                child: Text(
-                  l10n.cancel,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ListTile(
+                title: Text(l10n.google),
+                subtitle: const Text('8.8.8.8'),
+                leading: const Radio<DohProvider>(value: DohProvider.google),
+                onTap: () => _saveAndClose(DohProvider.google),
+              ),
+              ListTile(
+                title: Text(l10n.adguard),
+                subtitle: const Text('dns.adguard.com'),
+                leading: const Radio<DohProvider>(value: DohProvider.adguard),
+                onTap: () => _saveAndClose(DohProvider.adguard),
+              ),
+              ListTile(
+                title: Text(l10n.dnsWatch),
+                subtitle: const Text('resolver2.dns.watch'),
+                leading: const Radio<DohProvider>(value: DohProvider.dnsWatch),
+                onTap: () => _saveAndClose(DohProvider.dnsWatch),
+              ),
+              ListTile(
+                title: Text(l10n.quad9),
+                subtitle: const Text('9.9.9.9'),
+                leading: const Radio<DohProvider>(value: DohProvider.quad9),
+                onTap: () => _saveAndClose(DohProvider.quad9),
+              ),
+              ListTile(
+                title: Text(l10n.dnsSb),
+                subtitle: const Text('doh.dns.sb'),
+                leading: const Radio<DohProvider>(value: DohProvider.dnsSb),
+                onTap: () => _saveAndClose(DohProvider.dnsSb),
+              ),
+              ListTile(
+                title: Text(l10n.canadianShield),
+                subtitle: const Text('private.canadianshield.cira.ca'),
+                leading: const Radio<DohProvider>(
+                  value: DohProvider.canadianShield,
+                ),
+                onTap: () => _saveAndClose(DohProvider.canadianShield),
+              ),
+              ListTile(
+                title: Text(l10n.custom),
+                subtitle: Text(l10n.enterCustomDohUrl),
+                leading: const Radio<DohProvider>(value: DohProvider.custom),
+                onTap: () =>
+                    setState(() => _currentProvider = DohProvider.custom),
+              ),
+              if (_currentProvider == DohProvider.custom)
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 8.0,
+                  ),
+                  child: CustomTextField(
+                    controller: _controller,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: l10n.customDohUrlLabel,
+                      hintText: 'https://...',
+                      prefixIcon: const Icon(Icons.link_rounded, size: 20),
+                    ),
+                    keyboardType: TextInputType.url,
                   ),
                 ),
-              ),
-              if (currentProvider == DohProvider.custom)
-                CustomButton(
-                  isPrimary: true,
-                  onPressed: () {
-                    final url = controller.text.trim();
-                    if (url.isNotEmpty) {
-                      saveAndClose(DohProvider.custom, url);
-                    }
-                  },
-                  child: Text(l10n.save),
-                ),
             ],
-          );
-        },
-      );
-    },
-  );
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop<void>(context),
+          child: Text(
+            l10n.cancel,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        if (_currentProvider == DohProvider.custom)
+          CustomButton(
+            isPrimary: true,
+            onPressed: () {
+              final url = _controller.text.trim();
+              if (url.isNotEmpty) {
+                _saveAndClose(DohProvider.custom, url);
+              }
+            },
+            child: Text(l10n.save),
+          ),
+      ],
+    );
+  }
 }
 
 /// Shows a dialog to pick the app theme mode.
@@ -1657,204 +1662,227 @@ void showPlayerControlsDialog(BuildContext context, WidgetRef ref) {
 }
 
 /// Shows a dialog to enter OpenSubtitles.com credentials.
-/// Shows a dialog to enter OpenSubtitles.com credentials.
 void showOpenSubtitlesAuthDialog(
   BuildContext context,
   WidgetRef ref,
   PlayerSettings settings,
 ) {
-  final l10n = AppLocalizations.of(context)!;
-  final userController = TextEditingController(text: settings.osUsername);
-  final passController = TextEditingController(text: settings.osPassword);
-
   showDialog<void>(
     context: context,
-    builder: (ctx) {
-      bool isVerifying = false;
-      bool? verifyResult;
-      var isObscure = true;
+    builder: (_) => _OpenSubtitlesAuthDialog(settings: settings),
+  );
+}
 
-      return StatefulBuilder(
-        builder: (context, setState) => FocusTraversalGroup(
-          policy: WidgetOrderTraversalPolicy(),
-          child: AlertDialog(
-            surfaceTintColor: Colors.transparent,
-            title: Row(
-              children: [
-                const Icon(Icons.subtitles_rounded, color: Colors.blue),
-                const SizedBox(width: 12),
-                Text(l10n.openSubtitles),
-              ],
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    l10n.openSubtitlesAuthSubtitle,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  CustomTextField(
-                    controller: userController,
-                    autofocus: true,
-                    textInputAction: TextInputAction.next,
-                    decoration: InputDecoration(
-                      labelText: l10n.username,
-                      prefixIcon: const Icon(Icons.person_outline, size: 20),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  CustomTextField(
-                    controller: passController,
-                    obscureText: isObscure,
-                    decoration: InputDecoration(
-                      labelText: l10n.password,
-                      prefixIcon: const Icon(Icons.lock_outline, size: 20),
-                      suffixIcon: ExcludeFocus(
-                        child: IconButton(
-                          icon: Icon(
-                            isObscure ? Icons.visibility_off : Icons.visibility,
-                            size: 20,
-                          ),
-                          onPressed: () =>
-                              setState(() => isObscure = !isObscure),
-                        ),
+class _OpenSubtitlesAuthDialog extends ConsumerStatefulWidget {
+  final PlayerSettings settings;
+
+  const _OpenSubtitlesAuthDialog({required this.settings});
+
+  @override
+  ConsumerState<_OpenSubtitlesAuthDialog> createState() =>
+      _OpenSubtitlesAuthDialogState();
+}
+
+class _OpenSubtitlesAuthDialogState
+    extends ConsumerState<_OpenSubtitlesAuthDialog> {
+  late final TextEditingController _userController = TextEditingController(
+    text: widget.settings.osUsername,
+  );
+  late final TextEditingController _passController = TextEditingController(
+    text: widget.settings.osPassword,
+  );
+  bool _isVerifying = false;
+  bool? _verifyResult;
+  var _isObscure = true;
+
+  @override
+  void dispose() {
+    _userController.dispose();
+    _passController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _verify() async {
+    setState(() {
+      _isVerifying = true;
+      _verifyResult = null;
+    });
+    final ok = await ref
+        .read(playerSettingsProvider.notifier)
+        .verifyOpenSubtitles(
+          _userController.text.trim(),
+          _passController.text.trim(),
+        );
+    if (mounted) {
+      setState(() {
+        _isVerifying = false;
+        _verifyResult = ok;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final verifyResult = _verifyResult;
+
+    return FocusTraversalGroup(
+      policy: WidgetOrderTraversalPolicy(),
+      child: AlertDialog(
+        surfaceTintColor: Colors.transparent,
+        title: Row(
+          children: [
+            const Icon(Icons.subtitles_rounded, color: Colors.blue),
+            const SizedBox(width: 12),
+            Text(l10n.openSubtitles),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.openSubtitlesAuthSubtitle,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              CustomTextField(
+                controller: _userController,
+                autofocus: true,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: l10n.username,
+                  prefixIcon: const Icon(Icons.person_outline, size: 20),
+                ),
+              ),
+              const SizedBox(height: 12),
+              CustomTextField(
+                controller: _passController,
+                obscureText: _isObscure,
+                decoration: InputDecoration(
+                  labelText: l10n.password,
+                  prefixIcon: const Icon(Icons.lock_outline, size: 20),
+                  suffixIcon: ExcludeFocus(
+                    child: IconButton(
+                      icon: Icon(
+                        _isObscure ? Icons.visibility_off : Icons.visibility,
+                        size: 20,
                       ),
+                      onPressed: () =>
+                          setState(() => _isObscure = !_isObscure),
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: () => launchUrl(
-                      Uri.parse(
-                        'https://www.opensubtitles.com/en/users/sign_up',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () => launchUrl(
+                  Uri.parse('https://www.opensubtitles.com/en/users/sign_up'),
+                  mode: LaunchMode.externalApplication,
+                ),
+                icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                label: Text(l10n.noAccountRegister),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+              ),
+              if (verifyResult != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      verifyResult
+                          ? Icons.check_circle_outline_rounded
+                          : Icons.error_outline_rounded,
+                      color: verifyResult ? Colors.green : Colors.red,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      verifyResult
+                          ? l10n.connectedSuccessfully
+                          : l10n.connectionFailed,
+                      style: TextStyle(
+                        color: verifyResult ? Colors.green : Colors.red,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
                       ),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                    label: Text(l10n.noAccountRegister),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  if (verifyResult != null) ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(
-                          verifyResult!
-                              ? Icons.check_circle_outline_rounded
-                              : Icons.error_outline_rounded,
-                          color: verifyResult! ? Colors.green : Colors.red,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          verifyResult!
-                              ? l10n.connectedSuccessfully
-                              : l10n.connectionFailed,
-                          style: TextStyle(
-                            color: verifyResult! ? Colors.green : Colors.red,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
                     ),
                   ],
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: isVerifying
-                          ? null
-                          : () async {
-                              setState(() {
-                                isVerifying = true;
-                                verifyResult = null;
-                              });
-                              final ok = await ref
-                                  .read(playerSettingsProvider.notifier)
-                                  .verifyOpenSubtitles(
-                                    userController.text.trim(),
-                                    passController.text.trim(),
-                                  );
-                              if (ctx.mounted) {
-                                setState(() {
-                                  isVerifying = false;
-                                  verifyResult = ok;
-                                });
-                              }
-                            },
-                      icon: isVerifying
-                          ? const AppLoadingIndicator(
-                              constraints: BoxConstraints(
-                                minWidth: 16,
-                                minHeight: 16,
-                                maxWidth: 16,
-                                maxHeight: 16,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.check_circle_outline_rounded,
-                              size: 18,
-                            ),
-                      label: Text(l10n.testConnection),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                ),
+              ],
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isVerifying ? null : _verify,
+                  icon: _isVerifying
+                      ? const AppLoadingIndicator(
+                          constraints: BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                            maxWidth: 16,
+                            maxHeight: 16,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.check_circle_outline_rounded,
+                          size: 18,
                         ),
-                      ),
+                  label: Text(l10n.testConnection),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                ],
-              ),
-            ),
-            actions: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: isVerifying
-                        ? null
-                        : () => Navigator.pop<void>(ctx),
-                    child: Text(
-                      l10n.cancel,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  CustomButton(
-                    isPrimary: true,
-                    onPressed: isVerifying
-                        ? null
-                        : () {
-                            ref
-                                .read(playerSettingsProvider.notifier)
-                                .setOpenSubtitlesCredentials(
-                                  userController.text.trim(),
-                                  passController.text.trim(),
-                                );
-                            Navigator.pop<void>(ctx);
-                          },
-                    child: Text(l10n.save),
-                  ),
-                ],
+                ),
               ),
             ],
           ),
         ),
-      );
-    },
-  );
+        actions: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _isVerifying
+                    ? null
+                    : () => Navigator.pop<void>(context),
+                child: Text(
+                  l10n.cancel,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              CustomButton(
+                isPrimary: true,
+                onPressed: _isVerifying
+                    ? null
+                    : () {
+                        ref
+                            .read(playerSettingsProvider.notifier)
+                            .setOpenSubtitlesCredentials(
+                              _userController.text.trim(),
+                              _passController.text.trim(),
+                            );
+                        Navigator.pop<void>(context);
+                      },
+                child: Text(l10n.save),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Shows a dialog to enter SubDL Account credentials.
@@ -1863,289 +1891,313 @@ void showSubDlAuthDialog(
   WidgetRef ref,
   PlayerSettings settings,
 ) {
-  final l10n = AppLocalizations.of(context)!;
-  final theme = Theme.of(context);
-  final apiKeyController = TextEditingController(text: settings.subdlApiKey);
-  final emailController = TextEditingController(text: settings.subdlEmail);
-  final passController = TextEditingController(text: settings.subdlPassword);
-
   showDialog<void>(
     context: context,
-    builder: (ctx) {
-      bool isFetching = false;
-      String? fetchError;
-      bool isObscure = true;
-      bool isVerifyingKey = false;
-      bool? verifyKeyResult;
+    builder: (_) => _SubDlAuthDialog(settings: settings),
+  );
+}
 
-      return StatefulBuilder(
-        builder: (context, setState) => FocusTraversalGroup(
-          policy: WidgetOrderTraversalPolicy(),
-          child: AlertDialog(
-            surfaceTintColor: Colors.transparent,
-            title: const Row(
-              children: [
-                Icon(Icons.vpn_key_rounded, color: Colors.orange),
-                SizedBox(width: 12),
-                Text('SubDL API Key'),
-              ],
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+class _SubDlAuthDialog extends ConsumerStatefulWidget {
+  final PlayerSettings settings;
+
+  const _SubDlAuthDialog({required this.settings});
+
+  @override
+  ConsumerState<_SubDlAuthDialog> createState() => _SubDlAuthDialogState();
+}
+
+class _SubDlAuthDialogState extends ConsumerState<_SubDlAuthDialog> {
+  late final TextEditingController _apiKeyController = TextEditingController(
+    text: widget.settings.subdlApiKey,
+  );
+  late final TextEditingController _emailController = TextEditingController(
+    text: widget.settings.subdlEmail,
+  );
+  late final TextEditingController _passController = TextEditingController(
+    text: widget.settings.subdlPassword,
+  );
+  bool _isFetching = false;
+  String? _fetchError;
+  bool _isObscure = true;
+  bool _isVerifyingKey = false;
+  bool? _verifyKeyResult;
+
+  bool get _busy => _isFetching || _isVerifyingKey;
+
+  @override
+  void dispose() {
+    _apiKeyController.dispose();
+    _emailController.dispose();
+    _passController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchKey() async {
+    setState(() {
+      _isFetching = true;
+      _fetchError = null;
+      _verifyKeyResult = null;
+    });
+    final result = await ref
+        .read(playerSettingsProvider.notifier)
+        .verifySubDl(
+          _emailController.text.trim(),
+          _passController.text.trim(),
+        );
+    if (mounted) {
+      setState(() {
+        _isFetching = false;
+        if (result.key != null) {
+          _apiKeyController.text = result.key!;
+        } else {
+          _fetchError = result.error;
+        }
+      });
+    }
+  }
+
+  Future<void> _verifyKey() async {
+    setState(() {
+      _isVerifyingKey = true;
+      _verifyKeyResult = null;
+      _fetchError = null;
+    });
+    final ok = await ref
+        .read(playerSettingsProvider.notifier)
+        .verifySubDlKey(_apiKeyController.text.trim());
+    if (mounted) {
+      setState(() {
+        _isVerifyingKey = false;
+        _verifyKeyResult = ok;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final fetchError = _fetchError;
+    final verifyKeyResult = _verifyKeyResult;
+
+    return FocusTraversalGroup(
+      policy: WidgetOrderTraversalPolicy(),
+      child: AlertDialog(
+        surfaceTintColor: Colors.transparent,
+        title: const Row(
+          children: [
+            Icon(Icons.vpn_key_rounded, color: Colors.orange),
+            SizedBox(width: 12),
+            Text('SubDL API Key'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.subDlAuthSubtitle,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              CustomTextField(
+                controller: _apiKeyController,
+                autofocus: true,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: l10n.apiKey,
+                  prefixIcon: const Icon(Icons.key_rounded, size: 20),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
                 children: [
-                  Text(
-                    l10n.subDlAuthSubtitle,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  const Expanded(child: Divider()),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Text(
+                      'OR FETCH VIA ACCOUNT',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: theme.colorScheme.onSurfaceVariant.withValues(
+                          alpha: 0.6,
+                        ),
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  CustomTextField(
-                    controller: apiKeyController,
-                    autofocus: true,
-                    textInputAction: TextInputAction.next,
-                    decoration: InputDecoration(
-                      labelText: l10n.apiKey,
-                      prefixIcon: const Icon(Icons.key_rounded, size: 20),
+                  const Expanded(child: Divider()),
+                ],
+              ),
+              const SizedBox(height: 16),
+              CustomTextField(
+                controller: _emailController,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: l10n.email,
+                  prefixIcon: const Icon(Icons.email_outlined, size: 20),
+                ),
+              ),
+              const SizedBox(height: 12),
+              CustomTextField(
+                controller: _passController,
+                obscureText: _isObscure,
+                decoration: InputDecoration(
+                  labelText: l10n.password,
+                  prefixIcon: const Icon(Icons.lock_outline, size: 20),
+                  suffixIcon: ExcludeFocus(
+                    child: IconButton(
+                      icon: Icon(
+                        _isObscure ? Icons.visibility_off : Icons.visibility,
+                        size: 20,
+                      ),
+                      onPressed: () =>
+                          setState(() => _isObscure = !_isObscure),
                     ),
                   ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      const Expanded(child: Divider()),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Text(
-                          'OR FETCH VIA ACCOUNT',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant
-                                .withValues(alpha: 0.6),
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _busy ? null : _fetchKey,
+                  icon: _isFetching
+                      ? const AppLoadingIndicator(
+                          color: Colors.white,
+                          constraints: BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                            maxWidth: 16,
+                            maxHeight: 16,
                           ),
-                        ),
-                      ),
-                      const Expanded(child: Divider()),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  CustomTextField(
-                    controller: emailController,
-                    textInputAction: TextInputAction.next,
-                    decoration: InputDecoration(
-                      labelText: l10n.email,
-                      prefixIcon: const Icon(Icons.email_outlined, size: 20),
+                        )
+                      : const Icon(Icons.download_rounded, size: 18),
+                  label: Text(l10n.fetchMyApiKey),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    backgroundColor: theme.colorScheme.primary.withValues(
+                      alpha: 0.8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  CustomTextField(
-                    controller: passController,
-                    obscureText: isObscure,
-                    decoration: InputDecoration(
-                      labelText: l10n.password,
-                      prefixIcon: const Icon(Icons.lock_outline, size: 20),
-                      suffixIcon: ExcludeFocus(
-                        child: IconButton(
-                          icon: Icon(
-                            isObscure ? Icons.visibility_off : Icons.visibility,
-                            size: 20,
-                          ),
-                          onPressed: () =>
-                              setState(() => isObscure = !isObscure),
-                        ),
-                      ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextButton.icon(
+                onPressed: () => launchUrl(
+                  Uri.parse('https://subdl.com/panel/api'),
+                  mode: LaunchMode.externalApplication,
+                ),
+                icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                label: Text(l10n.noAccountRegister),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+              ),
+              if (fetchError != null || verifyKeyResult != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      fetchError != null || verifyKeyResult == false
+                          ? Icons.error_outline_rounded
+                          : Icons.check_circle_outline_rounded,
+                      color: fetchError != null || verifyKeyResult == false
+                          ? Colors.red
+                          : Colors.green,
+                      size: 16,
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: (isFetching || isVerifyingKey)
-                          ? null
-                          : () async {
-                              setState(() {
-                                isFetching = true;
-                                fetchError = null;
-                                verifyKeyResult = null;
-                              });
-                              final result = await ref
-                                  .read(playerSettingsProvider.notifier)
-                                  .verifySubDl(
-                                    emailController.text.trim(),
-                                    passController.text.trim(),
-                                  );
-                              if (ctx.mounted) {
-                                setState(() {
-                                  isFetching = false;
-                                  if (result.key != null) {
-                                    apiKeyController.text = result.key!;
-                                  } else {
-                                    fetchError = result.error;
-                                  }
-                                });
-                              }
-                            },
-                      icon: isFetching
-                          ? const AppLoadingIndicator(
-                              color: Colors.white,
-                              constraints: BoxConstraints(
-                                minWidth: 16,
-                                minHeight: 16,
-                                maxWidth: 16,
-                                maxHeight: 16,
-                              ),
-                            )
-                          : const Icon(Icons.download_rounded, size: 18),
-                      label: Text(l10n.fetchMyApiKey),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        backgroundColor: theme.colorScheme.primary.withValues(
-                          alpha: 0.8,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton.icon(
-                    onPressed: () => launchUrl(
-                      Uri.parse('https://subdl.com/panel/api'),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                    label: Text(l10n.noAccountRegister),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  if (fetchError != null || verifyKeyResult != null) ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(
-                          fetchError != null || verifyKeyResult == false
-                              ? Icons.error_outline_rounded
-                              : Icons.check_circle_outline_rounded,
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        fetchError ??
+                            (verifyKeyResult!
+                                ? l10n.keyVerified
+                                : l10n.invalidApiKey),
+                        style: TextStyle(
                           color: fetchError != null || verifyKeyResult == false
                               ? Colors.red
                               : Colors.green,
-                          size: 16,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
                         ),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            fetchError ??
-                                (verifyKeyResult!
-                                    ? l10n.keyVerified
-                                    : l10n.invalidApiKey),
-                            style: TextStyle(
-                              color:
-                                  fetchError != null || verifyKeyResult == false
-                                  ? Colors.red
-                                  : Colors.green,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ],
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: (isFetching || isVerifyingKey)
-                          ? null
-                          : () async {
-                              setState(() {
-                                isVerifyingKey = true;
-                                verifyKeyResult = null;
-                                fetchError = null;
-                              });
-                              final ok = await ref
-                                  .read(playerSettingsProvider.notifier)
-                                  .verifySubDlKey(apiKeyController.text.trim());
-                              if (ctx.mounted) {
-                                setState(() {
-                                  isVerifyingKey = false;
-                                  verifyKeyResult = ok;
-                                });
-                              }
-                            },
-                      icon: isVerifyingKey
-                          ? const AppLoadingIndicator(
-                              constraints: BoxConstraints(
-                                minWidth: 16,
-                                minHeight: 16,
-                                maxWidth: 16,
-                                maxHeight: 16,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.check_circle_outline_rounded,
-                              size: 18,
-                            ),
-                      label: Text(l10n.testConnection),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                ),
+              ],
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _verifyKey,
+                  icon: _isVerifyingKey
+                      ? const AppLoadingIndicator(
+                          constraints: BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                            maxWidth: 16,
+                            maxHeight: 16,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.check_circle_outline_rounded,
+                          size: 18,
                         ),
-                      ),
+                  label: Text(l10n.testConnection),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                ],
-              ),
-            ),
-            actions: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: (isFetching || isVerifyingKey)
-                        ? null
-                        : () => Navigator.pop<void>(ctx),
-                    child: Text(
-                      l10n.cancel,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  CustomButton(
-                    isPrimary: true,
-                    onPressed: (isFetching || isVerifyingKey)
-                        ? null
-                        : () {
-                            ref
-                                .read(playerSettingsProvider.notifier)
-                                .setSubDlAuth(
-                                  apiKey: apiKeyController.text.trim(),
-                                  email: emailController.text.trim(),
-                                  pass: passController.text.trim(),
-                                );
-                            Navigator.pop<void>(ctx);
-                          },
-                    child: Text(l10n.save),
-                  ),
-                ],
+                ),
               ),
             ],
           ),
         ),
-      );
-    },
-  );
+        actions: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _busy ? null : () => Navigator.pop<void>(context),
+                child: Text(
+                  l10n.cancel,
+                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ),
+              const SizedBox(width: 8),
+              CustomButton(
+                isPrimary: true,
+                onPressed: _busy
+                    ? null
+                    : () {
+                        ref
+                            .read(playerSettingsProvider.notifier)
+                            .setSubDlAuth(
+                              apiKey: _apiKeyController.text.trim(),
+                              email: _emailController.text.trim(),
+                              pass: _passController.text.trim(),
+                            );
+                        Navigator.pop<void>(context);
+                      },
+                child: Text(l10n.save),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Shows a dialog to enter SubSource API Key.
@@ -2154,167 +2206,189 @@ void showSubSourceAuthDialog(
   WidgetRef ref,
   PlayerSettings settings,
 ) {
-  final l10n = AppLocalizations.of(context)!;
-  final keyController = TextEditingController(text: settings.subsourceApiKey);
-
   showDialog<void>(
     context: context,
-    builder: (ctx) {
-      bool isVerifying = false;
-      bool? verifyResult;
+    builder: (_) => _SubSourceAuthDialog(settings: settings),
+  );
+}
 
-      return StatefulBuilder(
-        builder: (context, setState) => FocusTraversalGroup(
-          policy: WidgetOrderTraversalPolicy(),
-          child: AlertDialog(
-            surfaceTintColor: Colors.transparent,
-            title: const Row(
-              children: [
-                Icon(Icons.vpn_key_rounded, color: Colors.blue),
-                SizedBox(width: 12),
-                Text('SubSource API Key'),
-              ],
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    l10n.subSourceAuthSubtitle,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+class _SubSourceAuthDialog extends ConsumerStatefulWidget {
+  final PlayerSettings settings;
+
+  const _SubSourceAuthDialog({required this.settings});
+
+  @override
+  ConsumerState<_SubSourceAuthDialog> createState() =>
+      _SubSourceAuthDialogState();
+}
+
+class _SubSourceAuthDialogState extends ConsumerState<_SubSourceAuthDialog> {
+  late final TextEditingController _keyController = TextEditingController(
+    text: widget.settings.subsourceApiKey,
+  );
+  bool _isVerifying = false;
+  bool? _verifyResult;
+
+  @override
+  void dispose() {
+    _keyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _verify() async {
+    setState(() {
+      _isVerifying = true;
+      _verifyResult = null;
+    });
+    final ok = await ref
+        .read(playerSettingsProvider.notifier)
+        .verifySubSource(_keyController.text.trim());
+    if (mounted) {
+      setState(() {
+        _isVerifying = false;
+        _verifyResult = ok;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final verifyResult = _verifyResult;
+
+    return FocusTraversalGroup(
+      policy: WidgetOrderTraversalPolicy(),
+      child: AlertDialog(
+        surfaceTintColor: Colors.transparent,
+        title: const Row(
+          children: [
+            Icon(Icons.vpn_key_rounded, color: Colors.blue),
+            SizedBox(width: 12),
+            Text('SubSource API Key'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.subSourceAuthSubtitle,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              CustomTextField(
+                controller: _keyController,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: l10n.apiKeyOptionalOverride,
+                  prefixIcon: const Icon(Icons.key_rounded, size: 20),
+                  hintText: l10n.enterKeyToOverrideDefault,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextButton.icon(
+                onPressed: () => launchUrl(
+                  Uri.parse('https://subsource.net/dashboard/profile'),
+                  mode: LaunchMode.externalApplication,
+                ),
+                icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                label: Text(l10n.getApiKeyFromProfile),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+              ),
+              if (verifyResult != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      verifyResult
+                          ? Icons.check_circle_outline_rounded
+                          : Icons.error_outline_rounded,
+                      color: verifyResult ? Colors.green : Colors.red,
+                      size: 16,
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  CustomTextField(
-                    controller: keyController,
-                    autofocus: true,
-                    decoration: InputDecoration(
-                      labelText: l10n.apiKeyOptionalOverride,
-                      prefixIcon: const Icon(Icons.key_rounded, size: 20),
-                      hintText: l10n.enterKeyToOverrideDefault,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton.icon(
-                    onPressed: () => launchUrl(
-                      Uri.parse('https://subsource.net/dashboard/profile'),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                    label: Text(l10n.getApiKeyFromProfile),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  if (verifyResult != null) ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(
-                          verifyResult!
-                              ? Icons.check_circle_outline_rounded
-                              : Icons.error_outline_rounded,
-                          color: verifyResult! ? Colors.green : Colors.red,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          verifyResult! ? l10n.keyVerified : l10n.invalidApiKey,
-                          style: TextStyle(
-                            color: verifyResult! ? Colors.green : Colors.red,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
+                    const SizedBox(width: 8),
+                    Text(
+                      verifyResult ? l10n.keyVerified : l10n.invalidApiKey,
+                      style: TextStyle(
+                        color: verifyResult ? Colors.green : Colors.red,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ],
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: isVerifying
-                          ? null
-                          : () async {
-                              setState(() {
-                                isVerifying = true;
-                                verifyResult = null;
-                              });
-                              final ok = await ref
-                                  .read(playerSettingsProvider.notifier)
-                                  .verifySubSource(keyController.text.trim());
-                              if (ctx.mounted) {
-                                setState(() {
-                                  isVerifying = false;
-                                  verifyResult = ok;
-                                });
-                              }
-                            },
-                      icon: isVerifying
-                          ? const AppLoadingIndicator(
-                              constraints: BoxConstraints(
-                                minWidth: 16,
-                                minHeight: 16,
-                                maxWidth: 16,
-                                maxHeight: 16,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.check_circle_outline_rounded,
-                              size: 18,
-                            ),
-                      label: Text(l10n.testConnection),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                ),
+              ],
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isVerifying ? null : _verify,
+                  icon: _isVerifying
+                      ? const AppLoadingIndicator(
+                          constraints: BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                            maxWidth: 16,
+                            maxHeight: 16,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.check_circle_outline_rounded,
+                          size: 18,
                         ),
-                      ),
+                  label: Text(l10n.testConnection),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                ],
-              ),
-            ),
-            actions: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: isVerifying
-                        ? null
-                        : () => Navigator.pop<void>(ctx),
-                    child: Text(
-                      l10n.cancel,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  CustomButton(
-                    isPrimary: true,
-                    onPressed: isVerifying
-                        ? null
-                        : () {
-                            ref
-                                .read(playerSettingsProvider.notifier)
-                                .setSubSourceApiKey(keyController.text.trim());
-                            Navigator.pop<void>(ctx);
-                          },
-                    child: Text(l10n.save),
-                  ),
-                ],
+                ),
               ),
             ],
           ),
         ),
-      );
-    },
-  );
+        actions: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _isVerifying
+                    ? null
+                    : () => Navigator.pop<void>(context),
+                child: Text(
+                  l10n.cancel,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              CustomButton(
+                isPrimary: true,
+                onPressed: _isVerifying
+                    ? null
+                    : () {
+                        ref
+                            .read(playerSettingsProvider.notifier)
+                            .setSubSourceApiKey(_keyController.text.trim());
+                        Navigator.pop<void>(context);
+                      },
+                child: Text(l10n.save),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2578,155 +2652,168 @@ void showMaxVolumeDialog(
 /// The key is validated against the live API before saving so a typo is
 /// caught here rather than surfacing as an empty grid later.
 void showTmdbApiKeyDialog(BuildContext context, WidgetRef ref) {
-  final l10n = AppLocalizations.of(context)!;
-  final current = ref.read(generalSettingsProvider).tmdbApiKey;
-  final controller = TextEditingController(text: current);
-
   showDialog<void>(
     context: context,
-    builder: (ctx) {
-      var isChecking = false;
-      String? errorText;
+    builder: (_) => const _TmdbApiKeyDialog(),
+  );
+}
 
-      return StatefulBuilder(
-        builder: (context, setState) {
-          Future<void> save() async {
-            final key = controller.text.trim();
+class _TmdbApiKeyDialog extends ConsumerStatefulWidget {
+  const _TmdbApiKeyDialog();
 
-            // Empty is a legitimate input: it clears the override and falls
-            // back to the build-time key.
-            if (key.isEmpty) {
-              await ref
-                  .read(generalSettingsProvider.notifier)
-                  .setTmdbApiKey('');
-              if (ctx.mounted) Navigator.pop<void>(ctx);
-              return;
-            }
+  @override
+  ConsumerState<_TmdbApiKeyDialog> createState() => _TmdbApiKeyDialogState();
+}
 
-            setState(() {
-              isChecking = true;
-              errorText = null;
-            });
+class _TmdbApiKeyDialogState extends ConsumerState<_TmdbApiKeyDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: ref.read(generalSettingsProvider).tmdbApiKey,
+  );
+  var _isChecking = false;
+  String? _errorText;
 
-            var valid = false;
-            try {
-              final dio = ref.read(dioClientProvider);
-              final res = await dio.get<Map<String, dynamic>>(
-                '${TmdbConfig.baseUrl}/authentication',
-                queryParameters: {'api_key': key},
-                options: Options(
-                  validateStatus: (s) => s != null && s < 500,
-                  receiveTimeout: const Duration(seconds: 15),
-                ),
-              );
-              valid = res.statusCode == 200;
-            } catch (_) {
-              // Network failure is not the same as a bad key; fall through to
-              // the generic message so an offline user isn't told their key
-              // is wrong.
-              valid = false;
-            }
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
-            if (!ctx.mounted) return;
+  Future<void> _save() async {
+    final key = _controller.text.trim();
 
-            if (!valid) {
-              setState(() {
-                isChecking = false;
-                errorText =
-                    'Could not verify this key. Check the key and your '
-                    'connection, then try again.';
-              });
-              return;
-            }
+    // Empty is a legitimate input: it clears the override and falls
+    // back to the build-time key.
+    if (key.isEmpty) {
+      await ref.read(generalSettingsProvider.notifier).setTmdbApiKey('');
+      if (mounted) Navigator.pop<void>(context);
+      return;
+    }
 
-            await ref.read(generalSettingsProvider.notifier).setTmdbApiKey(key);
+    setState(() {
+      _isChecking = true;
+      _errorText = null;
+    });
 
-            // Force the TMDB-backed screens to refetch with the new key.
-            ref.invalidate(streamBrowserProvider);
+    var valid = false;
+    try {
+      final dio = ref.read(dioClientProvider);
+      final res = await dio.get<Map<String, dynamic>>(
+        '${TmdbConfig.baseUrl}/authentication',
+        queryParameters: {'api_key': key},
+        options: Options(
+          validateStatus: (s) => s != null && s < 500,
+          receiveTimeout: const Duration(seconds: 15),
+        ),
+      );
+      valid = res.statusCode == 200;
+    } catch (_) {
+      // Network failure is not the same as a bad key; fall through to
+      // the generic message so an offline user isn't told their key
+      // is wrong.
+      valid = false;
+    }
 
-            if (ctx.mounted) Navigator.pop<void>(ctx);
-          }
+    if (!mounted) return;
 
-          return AlertDialog(
-            surfaceTintColor: Colors.transparent,
-            title: const Text('TMDB API key'),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Stream and Explore use TMDB for posters, titles and '
-                    'search. Paste a free API key to enable them.',
-                  ),
-                  const SizedBox(height: 12),
-                  CustomTextField(
-                    controller: controller,
-                    autofocus: true,
-                    decoration: InputDecoration(
-                      labelText: 'API key (v3 auth)',
-                      hintText: 'e.g. 0123456789abcdef0123456789abcdef',
-                      errorText: errorText,
-                      prefixIcon: const Icon(Icons.vpn_key_rounded, size: 20),
-                    ),
-                    keyboardType: TextInputType.text,
-                  ),
-                  const SizedBox(height: 12),
-                  InkWell(
-                    onTap: () => launchUrl(
-                      Uri.parse('https://www.themoviedb.org/settings/api'),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.open_in_new_rounded, size: 16),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              'Get a free key from themoviedb.org',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.primary,
-                                decoration: TextDecoration.underline,
-                              ),
-                            ),
-                          ),
-                        ],
+    if (!valid) {
+      setState(() {
+        _isChecking = false;
+        _errorText =
+            'Could not verify this key. Check the key and your '
+            'connection, then try again.';
+      });
+      return;
+    }
+
+    await ref.read(generalSettingsProvider.notifier).setTmdbApiKey(key);
+
+    // Force the TMDB-backed screens to refetch with the new key.
+    ref.invalidate(streamBrowserProvider);
+
+    if (mounted) Navigator.pop<void>(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+
+    return AlertDialog(
+      surfaceTintColor: Colors.transparent,
+      title: const Text('TMDB API key'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Stream and Explore use TMDB for posters, titles and '
+              'search. Paste a free API key to enable them.',
+            ),
+            const SizedBox(height: 12),
+            CustomTextField(
+              controller: _controller,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: 'API key (v3 auth)',
+                hintText: 'e.g. 0123456789abcdef0123456789abcdef',
+                errorText: _errorText,
+                prefixIcon: const Icon(Icons.vpn_key_rounded, size: 20),
+              ),
+              keyboardType: TextInputType.text,
+            ),
+            const SizedBox(height: 12),
+            InkWell(
+              onTap: () => launchUrl(
+                Uri.parse('https://www.themoviedb.org/settings/api'),
+                mode: LaunchMode.externalApplication,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.open_in_new_rounded, size: 16),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        'Get a free key from themoviedb.org',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          decoration: TextDecoration.underline,
+                        ),
                       ),
                     ),
-                  ),
-                  if (isChecking) ...[
-                    const SizedBox(height: 16),
-                    const Row(
-                      children: [
-                        SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        SizedBox(width: 10),
-                        Text('Verifying key...'),
-                      ],
-                    ),
                   ],
-                ],
+                ),
               ),
             ),
-            actions: [
-              TextButton(
-                onPressed: isChecking ? null : () => Navigator.pop<void>(ctx),
-                child: Text(l10n.cancel),
-              ),
-              TextButton(
-                onPressed: isChecking ? null : save,
-                child: Text(l10n.save),
+            if (_isChecking) ...[
+              const SizedBox(height: 16),
+              const Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 10),
+                  Text('Verifying key...'),
+                ],
               ),
             ],
-          );
-        },
-      );
-    },
-  );
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isChecking ? null : () => Navigator.pop<void>(context),
+          child: Text(l10n.cancel),
+        ),
+        TextButton(
+          onPressed: _isChecking ? null : _save,
+          child: Text(l10n.save),
+        ),
+      ],
+    );
+  }
 }

@@ -573,6 +573,73 @@ class SubSourceProvider extends SubtitleProvider {
     return value.toString();
   }
 
+  /// Neither SubSource endpoint filters by episode, so both paths keep only
+  /// releases whose name carries the `E{nn}` tag (CloudStream does the same).
+  /// A season pack named without the tag is dropped here; the notifier's
+  /// season-only fallback pass (episode null) is what surfaces it.
+  ///
+  /// This is the episode half only. The keyless path is already scoped to one
+  /// season server-side (`getMovie` takes `season-{n}`), so the episode tag is
+  /// all it needs; V1 has no season parameter and must additionally go through
+  /// [_matchesSeasonEpisode].
+  static bool _matchesEpisode(String releaseName, int? episode) {
+    if (episode == null || episode <= 0) return true;
+    final epTag = "E${episode.toString().padLeft(2, '0')}";
+    return releaseName.contains(epTag);
+  }
+
+  /// `S02E05`, `s2e5`, `S02.E05` — the season/episode pair in a release name.
+  static final RegExp _seasonEpisodeTag = RegExp(
+    r'\bs(\d{1,2})[\s._-]*e\d{1,3}\b',
+    caseSensitive: false,
+  );
+
+  /// A bare season tag: `S02`, `Season 2`, `season.2`.
+  static final RegExp _seasonOnlyTag = RegExp(
+    r'\bs(?:eason)?[\s._-]*(\d{1,2})\b',
+    caseSensitive: false,
+  );
+
+  /// The season a release name declares, or null when it declares none.
+  static int? _seasonOf(String releaseName) {
+    final pair = _seasonEpisodeTag.firstMatch(releaseName);
+    if (pair != null) return int.tryParse(pair.group(1)!);
+    final solo = _seasonOnlyTag.firstMatch(releaseName);
+    if (solo != null) return int.tryParse(solo.group(1)!);
+    return null;
+  }
+
+  /// V1's `/subtitles` takes movieId + language and nothing else, so one
+  /// multi-season show hands back every season's releases in a single list and
+  /// the season has to be applied here next to the episode. Matching `E{nn}`
+  /// alone would present S01E05 and S03E05 as exact matches for S02E05.
+  ///
+  /// An entry whose own season cannot be read is ambiguous: it is dropped from
+  /// an exact episode match rather than shown as one, but kept for the
+  /// season-only fallback pass, which exists precisely to surface untagged
+  /// season packs. That pass still drops anything that positively declares a
+  /// different season.
+  static bool _matchesSeasonEpisode(
+    String releaseName,
+    int? season,
+    int? episode,
+  ) {
+    final wantSeason = (season != null && season > 0) ? season : null;
+    final entrySeason = wantSeason == null ? null : _seasonOf(releaseName);
+    if (episode == null || episode <= 0) {
+      return entrySeason == null || entrySeason == wantSeason;
+    }
+    if (!_matchesEpisode(releaseName, episode)) return false;
+    if (wantSeason == null) return true;
+    return entrySeason == wantSeason;
+  }
+
+  /// Neither SubSource path has a TMDb parameter: [tmdbId] is ignored, so a
+  /// TMDb-only target is a plain title search here (`searchType=text` on V1,
+  /// `searchMovie` by title keyless). IMDb ids are sent with their `tt`
+  /// prefix. [episode] is applied client-side by release name on both paths,
+  /// and on V1 so is [season] (its `/subtitles` endpoint has no season
+  /// parameter, so it returns every season of the show at once).
   @override
   Future<List<OnlineSubtitle>> search({
     required String query,
@@ -671,27 +738,36 @@ class SubSourceProvider extends SubtitleProvider {
           ? data['results'] as List<dynamic>
           : (data is List ? data : const <dynamic>[]);
 
-      final results = subs.map((s) {
-        final subId = s['subtitleId'] ?? s['id'];
-        final subName = _parseString(
-          s['releaseInfo'] ?? s['release_name'] ?? s['file_name'],
-          query,
-        );
-        final subLang = _parseString(s['language'], language ?? "Unknown");
+      final results = subs
+          .map((s) {
+            final subId = s['subtitleId'] ?? s['id'];
+            final subName = _parseString(
+              s['releaseInfo'] ?? s['release_name'] ?? s['file_name'],
+              query,
+            );
+            final subLang = _parseString(s['language'], language ?? "Unknown");
 
-        return OnlineSubtitle(
-          id: subId.toString(),
-          name: subName,
-          language: subLang,
-          source: name,
-          downloadUrl: "$baseUrlV1/subtitles/$subId/download",
-          isHearingImpaired: s['hearingImpaired'] == true || s['hi'] == 1,
-          metadata: {'id': subId, 'mode': 'v1'},
-        );
-      }).toList();
+            return OnlineSubtitle(
+              id: subId.toString(),
+              name: subName,
+              language: subLang,
+              source: name,
+              downloadUrl: "$baseUrlV1/subtitles/$subId/download",
+              isHearingImpaired: s['hearingImpaired'] == true || s['hi'] == 1,
+              metadata: {'id': subId, 'mode': 'v1'},
+            );
+          })
+          // The V1 subtitles endpoint takes movieId + language only, so both
+          // the season and the episode have to be applied here (the keyless
+          // path gets its season server-side and only needs the episode).
+          .where((sub) => _matchesSeasonEpisode(sub.name, season, episode))
+          .toList();
 
       if (kDebugMode) {
-        debugPrint("[SubSource V1] Found ${results.length} results.");
+        debugPrint(
+          "[SubSource V1] Found ${results.length} results"
+          "${episode != null && episode > 0 ? ' for E$episode' : ''}.",
+        );
       }
       return results;
     } catch (e) {
@@ -795,11 +871,7 @@ class SubSourceProvider extends SubtitleProvider {
         final String release = (s['releaseName'] ?? "").toString();
 
         final matchesLang = lang == queryLang.toLowerCase();
-        if (episode != null && episode > 0) {
-          final epTag = "E${episode.toString().padLeft(2, '0')}";
-          return matchesLang && release.contains(epTag);
-        }
-        return matchesLang;
+        return matchesLang && _matchesEpisode(release, episode);
       }).toList();
 
       final results = filteredSubs.map((s) {

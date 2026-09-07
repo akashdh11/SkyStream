@@ -12,7 +12,9 @@
 
 #include <vlcpp/vlc.hpp>
 
+#include "vlc_pixel_buffer_sink.h"
 #include "vlc_player_types.h"
+#include "vlc_video_output.h"
 
 namespace vlc_player {
 
@@ -60,7 +62,23 @@ class VlcPlayerCore {
   bool CopyPixels(const uint8_t** out_buffer, uint32_t* width, uint32_t* height);
   void Dispose();
 
+  // A cheap, order-sensitive fingerprint of the audio + subtitle track SET.
+  //
+  // Snapshot() diffs this instead of a track count: the two lists can be
+  // replaced wholesale without changing how many entries they hold (an
+  // adaptive rendition change, an MPEG-TS PMT update), and a count-derived
+  // revision would sit still through it, leaving every consumer caching
+  // GetAudioTracks() / GetSubtitleTracks() drawing the previous names with
+  // nothing ticked.
+  //
+  // Public because that property - a same-size swap moves the number - is
+  // what the native suite pins.
+  static int64_t TrackSetFingerprint(
+      const std::vector<VlcTrackDescription>& audio,
+      const std::vector<VlcTrackDescription>& subtitles);
+
 #ifdef VLC_PLAYER_TESTING
+  VlcPixelBufferSink* FrameSinkForTesting();
   void ResizeVideoBufferForTesting(uint32_t width,
                                    uint32_t height,
                                    uint32_t pitch);
@@ -72,15 +90,6 @@ class VlcPlayerCore {
 #endif  // VLC_PLAYER_TESTING
 
  private:
-  uint32_t SetupFormat(char* chroma,
-                       uint32_t* width,
-                       uint32_t* height,
-                       uint32_t* pitches,
-                       uint32_t* lines);
-  void* Lock(void** planes);
-  void Unlock(void* picture, void* const* planes);
-  void Display(void* picture);
-  void ResizeVideoBuffer(uint32_t width, uint32_t height, uint32_t pitch);
   std::string ActiveError() const;
 
   static std::string StateName(libvlc_state_t state);
@@ -98,18 +107,18 @@ class VlcPlayerCore {
   std::string init_error_;
   std::atomic<bool> disposed_{false};
 
-  mutable std::mutex video_mutex_;
-  std::vector<uint8_t> frame_buffer_;
-  std::vector<uint8_t> render_buffer_;
-  std::vector<uint8_t> texture_buffer_;
-  uint32_t video_width_ = 0;
-  uint32_t video_height_ = 0;
-  uint32_t video_pitch_ = 0;
-  uint64_t render_generation_ = 0;
-  uint64_t texture_generation_ = 0;
+  // Declared before video_output_ so the output is torn down first: Detach
+  // has to stop libVLC calling in before the sink it calls into is gone.
+  std::unique_ptr<VlcPixelBufferSink> frame_sink_;
+  std::unique_ptr<VlcVideoOutput> video_output_;
 
   mutable std::mutex state_mutex_;
   int volume_ = 100;
+  // TrackSetFingerprint() of the audio + spu lists seen by the last
+  // Snapshot(); the revision moves when a new snapshot disagrees with it.
+  // -1 is unreachable for a real fingerprint, so it means "nothing seen yet".
+  int64_t last_track_fingerprint_ = -1;
+  int64_t track_revision_ = 0;
   std::string state_override_;
   std::string error_code_;
   std::string error_description_;

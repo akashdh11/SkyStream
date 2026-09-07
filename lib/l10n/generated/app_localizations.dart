@@ -2568,6 +2568,456 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Episodes button'**
   String get showEpisodes;
+
+  /// Playback cannot start because no extension is selected to resolve the link.
+  ///
+  /// In en, this message translates to:
+  /// **'No provider selected.'**
+  String get playerNoProviderSelected;
+
+  /// Playback was requested with neither a link nor any already-resolved sources.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing to play.'**
+  String get playerNothingToPlay;
+
+  /// The extension threw while listing sources. {error} is the raw, untranslated plugin message.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load sources: {error}'**
+  String playerCouldNotLoadSources(String error);
+
+  /// Source resolution was abandoned because the viewer left the player before it finished.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled.'**
+  String get playerResolutionCancelled;
+
+  /// The extension answered, but with nothing playable for this title.
+  ///
+  /// In en, this message translates to:
+  /// **'No streams found.'**
+  String get playerNoStreamsFound;
+
+  /// Why an encrypted stream will never open. Naming the scheme matters: Widevine is permanently out of reach.
+  ///
+  /// In en, this message translates to:
+  /// **'This channel uses Widevine DRM, which needs a licence module this player does not have.'**
+  String get playerDrmWidevine;
+
+  /// Why an encrypted stream will never open. Naming the scheme matters: PlayReady is permanently out of reach.
+  ///
+  /// In en, this message translates to:
+  /// **'This channel uses PlayReady DRM, which needs a licence module this player does not have.'**
+  String get playerDrmPlayReady;
+
+  /// Why an encrypted stream will not open: the player did ask the licence server, and what came back was not a key it could use.
+  ///
+  /// In en, this message translates to:
+  /// **'This channel needs a decryption key from a licence server, and the server did not provide a usable one.'**
+  String get playerDrmLicenceServer;
+
+  /// Why an encrypted stream will not open: it is encrypted but nothing says how, so no key can be found.
+  ///
+  /// In en, this message translates to:
+  /// **'This channel is encrypted and no usable decryption key was provided.'**
+  String get playerDrmUnknown;
+
+  /// A failure during setup that carries no better explanation. {error} is a raw, untranslated engine message.
+  ///
+  /// In en, this message translates to:
+  /// **'Playback failed: {error}'**
+  String playerPlaybackFailed(String error);
+
+  /// Every candidate has been tried and failed, with no single reason worth naming. {count} is how many were tried.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{The only source would not play.} other{None of the {count} sources would play.}}'**
+  String playerNoSourcesPlayable(int count);
+
+  /// Every candidate has been tried and failed. {reason} is why the last one gave up - one of the playerReason* or playerDrm* strings.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{The only source would not play - {reason}} other{None of the {count} sources would play - {reason}}}'**
+  String playerNoSourcesPlayableWithReason(int count, String reason);
+
+  /// Progress note while a magnet is being seeded, before the engine has anything to open.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing torrent…'**
+  String get playerPreparingTorrent;
+
+  /// Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'torrent could not be prepared'**
+  String get playerReasonTorrentNotPrepared;
+
+  /// Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'source has no playable address'**
+  String get playerReasonNoPlayableAddress;
+
+  /// Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'live feed dropped repeatedly'**
+  String get playerReasonLiveFeedDropped;
+
+  /// Why one source gave up. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'stream ended before its duration'**
+  String get playerReasonStreamEndedEarly;
+
+  /// Why one source gave up, when the engine reported a failure but described it in no way. A lowercase fragment, used like the other playerReason strings.
+  ///
+  /// In en, this message translates to:
+  /// **'playback error'**
+  String get playerReasonPlaybackError;
+
+  /// Why one source gave up: it played and then went quiet. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'the source stopped responding'**
+  String get playerReasonSourceStoppedResponding;
+
+  /// Why one source gave up: it never produced a frame at all. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'the source never started'**
+  String get playerReasonSourceNeverStarted;
+
+  /// Why one source gave up: the device lost connectivity while it was playing. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'the network dropped'**
+  String get playerReasonNetworkDropped;
+
+  /// Why one source gave up: the viewer pressed Skip rather than wait for it to open. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'you skipped this source'**
+  String get playerReasonSkipped;
+
+  /// Button that stops waiting on the source the player is opening and moves to the next candidate. Named for the source rather than just Skip, which on this screen already means Skip Intro.
+  ///
+  /// In en, this message translates to:
+  /// **'Skip source'**
+  String get playerSkipSource;
+
+  /// Badge on a candidate whose health probe answered. Sits beside the existing trying and failed badges in the startup source list.
+  ///
+  /// In en, this message translates to:
+  /// **'Reachable'**
+  String get playerSourceReachable;
+
+  /// Why one source gave up: the engine reported the end of the media without ever showing a frame. A lowercase fragment: it is shown alone when there is only one source, or after a dash in playerNoSourcesPlayableWithReason.
+  ///
+  /// In en, this message translates to:
+  /// **'stream ended before it played'**
+  String get playerReasonStreamEndedBeforePlaying;
+
+  /// Headline on the card that replaces the frozen last frame when playback runs out with nothing queued behind it: a film, the last episode of a series, or an episode whose automatic advance the viewer declined during the credits. Below it sit startOver and close, plus a next-episode action when one was declined.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'ve finished {title}'**
+  String playerFinished(String title);
+
+  /// Status pill over a frame that has stopped moving, shown from the moment the player first re-issues its request to the source until the position moves again or the source is replaced. Also the opening line while a dropped live feed is being reopened.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting…'**
+  String get playerReconnecting;
+
+  /// The 1x entry in the playback speed list, named rather than numbered.
+  ///
+  /// In en, this message translates to:
+  /// **'Normal'**
+  String get playerSpeedNormal;
+
+  /// Tooltip for the button that reveals peer and download figures for a torrent source.
+  ///
+  /// In en, this message translates to:
+  /// **'Torrent stats'**
+  String get torrentStats;
+
+  /// Video fit mode that presents the picture at its native size. Sits alongside fit, zoom and stretch.
+  ///
+  /// In en, this message translates to:
+  /// **'Original'**
+  String get original;
+
+  /// The engine refused to list its audio and subtitle tracks. {error} is a raw, untranslated engine message.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read tracks: {error}'**
+  String playerCouldNotReadTracks(String error);
+
+  /// Fallback name for an audio or subtitle track the stream left unnamed. {id} is the engine's track number.
+  ///
+  /// In en, this message translates to:
+  /// **'Track {id}'**
+  String playerTrackNumber(int id);
+
+  /// Label for the control that shifts subtitles earlier or later against the picture.
+  ///
+  /// In en, this message translates to:
+  /// **'Subtitle delay'**
+  String get subtitleDelay;
+
+  /// A source the viewer picked by hand failed, so the session it interrupted was put back. Shown as a brief notice over the video.
+  ///
+  /// In en, this message translates to:
+  /// **'That source would not play. Restored the previous one.'**
+  String get playerSourceRestoredPrevious;
+
+  /// A file picked out of a torrent pack has no seeded bytes yet, so the torrent server cannot serve it.
+  ///
+  /// In en, this message translates to:
+  /// **'That file is not ready to stream yet.'**
+  String get playerTorrentFileNotReady;
+
+  /// Tooltip for the button that lists the files inside the torrent being played, so another one can be opened.
+  ///
+  /// In en, this message translates to:
+  /// **'Torrent files'**
+  String get torrentFiles;
+
+  /// Section heading over the audio tracks in the track sheet. Sits above the subtitles heading.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio'**
+  String get audio;
+
+  /// The engine answered the track query with an empty audio list, which is not the same as the query failing.
+  ///
+  /// In en, this message translates to:
+  /// **'No audio tracks reported'**
+  String get noAudioTracksReported;
+
+  /// Opens the device file picker to add a subtitle from storage as a track.
+  ///
+  /// In en, this message translates to:
+  /// **'Load subtitle file'**
+  String get loadSubtitleFile;
+
+  /// Opens the online subtitle search from the track sheet. Sits directly under loadSubtitleFile, hence the short wording.
+  ///
+  /// In en, this message translates to:
+  /// **'Search online'**
+  String get searchSubtitlesOnline;
+
+  /// Label on the query field of the online subtitle search sheet.
+  ///
+  /// In en, this message translates to:
+  /// **'Search online subtitles'**
+  String get searchOnlineSubtitles;
+
+  /// Title of the dialog that picks which language the online subtitle search asks for.
+  ///
+  /// In en, this message translates to:
+  /// **'Subtitle language'**
+  String get subtitleLanguage;
+
+  /// A chosen search result could not be fetched or unpacked. The other results are still worth trying, so this says so.
+  ///
+  /// In en, this message translates to:
+  /// **'That subtitle could not be downloaded. Try another result.'**
+  String get subtitleDownloadFailed;
+
+  /// The online subtitle search itself failed rather than one provider within it. {error} is a raw, untranslated message.
+  ///
+  /// In en, this message translates to:
+  /// **'Search failed: {error}'**
+  String subtitleSearchFailed(String error);
+
+  /// The online subtitle search has not been run yet, so there is nothing to list.
+  ///
+  /// In en, this message translates to:
+  /// **'Search for a title to find subtitles for it.'**
+  String get subtitleSearchPrompt;
+
+  /// The online subtitle search ran and matched nothing. Names both things worth changing, because the language filter is the usual culprit.
+  ///
+  /// In en, this message translates to:
+  /// **'No subtitles found. Try a different title or language.'**
+  String get noSubtitlesFoundTryAnother;
+
+  /// Label under the seed and peer counts on the torrent stats card, shown as "12 / 34".
+  ///
+  /// In en, this message translates to:
+  /// **'Seeds / Peers'**
+  String get seedsPeers;
+
+  /// Why the subtitle appearance settings do not alter a video that is already playing.
+  ///
+  /// In en, this message translates to:
+  /// **'The engine draws subtitles, so it is handed these when playback starts — a change applies to the next video.'**
+  String get subtitleAppearanceNote;
+
+  /// The subtitle font size row, and the title of the dialog it opens.
+  ///
+  /// In en, this message translates to:
+  /// **'Text size'**
+  String get textSize;
+
+  /// The subtitle glyph colour row, and the title of the dialog it opens.
+  ///
+  /// In en, this message translates to:
+  /// **'Text colour'**
+  String get subtitleTextColour;
+
+  /// Puts size, colour and background back to what a fresh install uses.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset subtitle appearance'**
+  String get resetSubtitleAppearance;
+
+  /// What resetSubtitleAppearance will actually do, named rather than left to be discovered.
+  ///
+  /// In en, this message translates to:
+  /// **'Back to white text at size 22'**
+  String get resetSubtitleAppearanceSubtitle;
+
+  /// The caption drawn in the appearance preview. A pangram-style phrase in the reader's own script is worth more than a translation of this one.
+  ///
+  /// In en, this message translates to:
+  /// **'The quick brown fox'**
+  String get subtitlePreviewSample;
+
+  /// One-line summary of the subtitle background box. {color} is one of the color* strings, {percent} its opacity.
+  ///
+  /// In en, this message translates to:
+  /// **'{color} · {percent}%'**
+  String subtitleBackgroundSummary(String color, int percent);
+
+  /// Zero opacity is the only way to get no background box at all, so it is spelled out rather than shown as 0%.
+  ///
+  /// In en, this message translates to:
+  /// **'Opacity: off'**
+  String get opacityOff;
+
+  /// Live readout above the subtitle background opacity slider. {percent} is 0 to 100.
+  ///
+  /// In en, this message translates to:
+  /// **'Opacity: {percent}%'**
+  String opacityPercent(int percent);
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'White'**
+  String get colorWhite;
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Yellow'**
+  String get colorYellow;
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Cyan'**
+  String get colorCyan;
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Green'**
+  String get colorGreen;
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Magenta'**
+  String get colorMagenta;
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Red'**
+  String get colorRed;
+
+  /// A caption colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Black'**
+  String get colorBlack;
+
+  /// A caption background colour the viewer can pick. Named, not shown as a hex value.
+  ///
+  /// In en, this message translates to:
+  /// **'Dark grey'**
+  String get colorDarkGrey;
+
+  /// Marks the source row the player is actually on, in the side panel's Sources tab.
+  ///
+  /// In en, this message translates to:
+  /// **'Now playing'**
+  String get playerNowPlaying;
+
+  /// Shown above the source list when the quality filter matched no source and was dropped.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing matched your quality preference, so every source is listed.'**
+  String get playerQualityFilterDropped;
+
+  /// Seeder count badge on a torrent source row.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 seeder} other{{count} seeders}}'**
+  String playerSeeders(int count);
+
+  /// Side-panel tab listing the video files inside the torrent being played.
+  ///
+  /// In en, this message translates to:
+  /// **'Files'**
+  String get playerFiles;
+
+  /// Compact episode number for a series with seasons.
+  ///
+  /// In en, this message translates to:
+  /// **'S{season} E{episode}'**
+  String playerSeasonEpisode(int season, int episode);
+
+  /// Compact episode number where the series has no seasons.
+  ///
+  /// In en, this message translates to:
+  /// **'E{episode}'**
+  String playerEpisodeNumber(int episode);
+
+  /// Episode runtime, in minutes, on a side-panel episode row.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} min'**
+  String playerRuntimeMinutes(int count);
+
+  /// Label for the stepper that shifts the audio track earlier or later against the picture. Sits beside subtitleDelay.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio delay'**
+  String get audioDelay;
+
+  /// Note above online subtitle results when the ID lookup returned nothing and the search fell back to matching the title text. Must not claim the ID was wrong: some providers answer an empty list when no key is configured.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing matched this title\'s ID. Showing title matches instead.'**
+  String get subtitleSearchTitleFallback;
+
+  /// Note above online subtitle results when the episode-scoped search returned nothing and the search widened to the whole season. Distinct from subtitleSearchTitleFallback: it must warn that the list covers other episodes too, because the viewer has to pick their own episode's file by name, and it must not mention an ID (the season pass is reached with no ID in play).
+  ///
+  /// In en, this message translates to:
+  /// **'No subtitles for this episode. These are for the whole season, so check the episode number in the file name.'**
+  String get subtitleSearchSeasonFallback;
+
+  /// Empty state of the online subtitle search when no provider has credentials, so a search would silently return nothing. Points at the Settings screen where keys are added.
+  ///
+  /// In en, this message translates to:
+  /// **'No subtitle account is set up. Add an OpenSubtitles, SubDL or SubSource key in Settings to search online.'**
+  String get subtitleAccountsNotConfigured;
 }
 
 class _AppLocalizationsDelegate

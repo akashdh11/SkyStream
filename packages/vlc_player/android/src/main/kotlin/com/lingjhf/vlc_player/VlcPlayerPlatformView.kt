@@ -10,11 +10,13 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.PixelCopy
+import android.view.Surface
 import android.view.View
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
+import io.flutter.view.TextureRegistry
 import java.io.ByteArrayOutputStream
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
@@ -24,22 +26,31 @@ import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.interfaces.IVLCVout
 import org.videolan.libvlc.util.VLCVideoLayout
 
+/**
+ * One libVLC player and everything that hangs off it.
+ *
+ * Implements [PlatformView] for the [VlcRenderTarget.VideoLayout] target; a
+ * [VlcRenderTarget.Texture] player is never registered as a platform view and
+ * the engine never asks it for one. The name predates the texture target and
+ * is kept so the Darwin plugins and this one read the same.
+ */
 internal class VlcPlayerPlatformView(
     private val context: Context,
     messenger: BinaryMessenger,
-    viewIdentifier: Int,
+    viewIdentifier: Long,
     options: ArrayList<String>,
     fit: String,
+    private val target: VlcRenderTarget,
     private val onDispose: (Long, VlcPlayerPlatformView) -> Unit,
 ) : PlatformView, MediaPlayer.EventListener {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val videoLayout = VLCVideoLayout(context)
+    private val videoLayout: VLCVideoLayout? = (target as? VlcRenderTarget.VideoLayout)?.layout
     private val libVLC = LibVLC(context, options)
     private val mediaPlayer = MediaPlayer(libVLC)
     private var videoScale = scaleTypeFor(fit)
     private val eventChannel = EventChannel(messenger, "vlc_player/events/$viewIdentifier")
     private val streamHandler = StreamHandler()
-    private val viewId = viewIdentifier.toLong()
+    private val viewId = viewIdentifier
     private val attachStateListener = object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(view: View) {
             scheduleAttachViews()
@@ -71,6 +82,28 @@ internal class VlcPlayerPlatformView(
             }
         }
     }
+    private val surfaceCallback = object : TextureRegistry.SurfaceProducer.Callback {
+        override fun onSurfaceAvailable() {
+            // The engine has rebuilt the ImageReader behind the texture, so the
+            // surface libVLC last drew into is gone for good; getSurface() now
+            // hands out the replacement.
+            attachViewsIfNeeded()
+        }
+
+        override fun onSurfaceCleanup() {
+            // Synchronous on purpose: the engine closes the ImageReader the
+            // moment this returns, and a decoder still queueing into it would
+            // start failing dequeues.
+            releaseViews()
+        }
+    }
+    private val videoLayoutListener = IVLCVout.OnNewVideoLayoutListener {
+        _, width, height, visibleWidth, visibleHeight, _, _ ->
+        onNewVideoLayout(
+            if (visibleWidth > 0) visibleWidth else width,
+            if (visibleHeight > 0) visibleHeight else height,
+        )
+    }
     private val voutCallback = object : IVLCVout.Callback {
         override fun onSurfacesCreated(vlcVout: IVLCVout) {
             if (disposed) {
@@ -95,29 +128,93 @@ internal class VlcPlayerPlatformView(
         }
     }
 
+    private val audioFocusListener = object : VlcAudioFocusManager.Listener {
+        override fun onAudioFocusPause(transient: Boolean) {
+            interruptPlayback(
+                if (transient) INTERRUPTION_FOCUS_LOST_TRANSIENT else INTERRUPTION_FOCUS_LOST,
+            )
+        }
+
+        override fun onAudioFocusDuck() {
+            if (disposed || !mediaPlayer.isPlaying) {
+                return
+            }
+            // Ducking beats pausing for a navigation prompt: the film keeps
+            // running and the prompt is audible over it. The viewer's own
+            // volume is left alone and the attenuation applied underneath, so
+            // a volume slider does not jump while the prompt speaks.
+            duckFactor = DUCK_FACTOR
+            applyVolume()
+            interruption = INTERRUPTION_DUCKED
+            sendSnapshot()
+        }
+
+        override fun onAudioFocusGain() {
+            if (disposed || interruption == INTERRUPTION_NONE) {
+                return
+            }
+            restoreDuckedVolume()
+            interruption = INTERRUPTION_NONE
+            // Reported, not acted on. Whether playback should resume depends on
+            // the app lifecycle and the background policy, and both of those
+            // live in Dart; resuming from here would start a film in an app
+            // the viewer walked away from ten minutes ago.
+            sendSnapshot()
+        }
+
+        override fun onBecomingNoisy() {
+            interruptPlayback(INTERRUPTION_BECAME_NOISY)
+        }
+    }
+    private val audioFocus = VlcAudioFocusManager(context, audioFocusListener)
+
     private var state = STATE_IDLE
     private var volume = 100
+    private var duckFactor = 1.0f
+    private var interruption = INTERRUPTION_NONE
     private var playbackSpeed = 1.0f
     private var bufferingProgress: Double? = null
     private var errorCode: String? = null
     private var errorDescription: String? = null
     private var lastSentEvent: Map<String, Any?>? = null
+    /// Bumped on every audio or subtitle ESAdded / ESDeleted so a consumer
+    /// caching the track lists knows to refetch. Monotonic for the life of
+    /// this player.
+    private var trackRevision = 0
     private var viewsAttached = false
     private var detachingViews = false
     private var attachViewsPosted = false
     private var disposed = false
 
+    /// The surface libVLC is drawing into on the texture target, and so the
+    /// one a snapshot copies from. Null whenever the vout is detached.
+    private var attachedSurface: Surface? = null
+    private var videoLayoutWidth = 0
+    private var videoLayoutHeight = 0
+
     init {
-        videoLayout.setBackgroundColor(Color.BLACK)
-        videoLayout.addOnAttachStateChangeListener(attachStateListener)
-        videoLayout.addOnLayoutChangeListener(layoutChangeListener)
+        when (target) {
+            is VlcRenderTarget.VideoLayout -> {
+                target.layout.setBackgroundColor(Color.BLACK)
+                target.layout.addOnAttachStateChangeListener(attachStateListener)
+                target.layout.addOnLayoutChangeListener(layoutChangeListener)
+            }
+            is VlcRenderTarget.Texture -> target.producer.setCallback(surfaceCallback)
+        }
         mediaPlayer.setEventListener(this)
         mediaPlayer.vlcVout.addCallback(voutCallback)
-        scheduleAttachViews()
+        // The view target waits for its layout to reach a window; the texture's
+        // surface exists now, and Dart's setSource follows create on the very
+        // next message, so the vout has to be in place before that lands.
+        if (target is VlcRenderTarget.Texture) {
+            attachViewsIfNeeded()
+        } else {
+            scheduleAttachViews()
+        }
         eventChannel.setStreamHandler(streamHandler)
     }
 
-    override fun getView(): View = videoLayout
+    override fun getView(): View? = videoLayout
 
     fun setSource(
         uri: String,
@@ -148,8 +245,9 @@ internal class VlcPlayerPlatformView(
             errorCode = null
             errorDescription = null
             lastSentEvent = null
+            clearInterruption()
             updateState(STATE_OPENING)
-            if (autoPlay) {
+            if (autoPlay && requestAudioFocusToPlay()) {
                 mediaPlayer.play()
             }
             result.success(null)
@@ -173,7 +271,10 @@ internal class VlcPlayerPlatformView(
         if (!ensureActive(result)) {
             return
         }
-        mediaPlayer.play()
+        clearInterruption()
+        if (requestAudioFocusToPlay()) {
+            mediaPlayer.play()
+        }
         result.success(null)
     }
 
@@ -181,6 +282,10 @@ internal class VlcPlayerPlatformView(
         if (!ensureActive(result)) {
             return
         }
+        // Focus is kept over a pause on purpose. A viewer who pauses for a
+        // moment expects the next press of play to be instant, and handing
+        // audio back only to snatch it again interrupts whatever took it.
+        clearInterruption()
         mediaPlayer.pause()
         result.success(null)
     }
@@ -189,6 +294,8 @@ internal class VlcPlayerPlatformView(
         if (!ensureActive(result)) {
             return
         }
+        audioFocus.abandon()
+        clearInterruption()
         mediaPlayer.stop()
         updateState(STATE_STOPPED)
         result.success(null)
@@ -208,7 +315,7 @@ internal class VlcPlayerPlatformView(
             return
         }
         this.volume = volume.coerceIn(0, 200)
-        mediaPlayer.volume = this.volume
+        applyVolume()
         sendSnapshot()
         result.success(null)
     }
@@ -255,6 +362,18 @@ internal class VlcPlayerPlatformView(
         if (!ensureActive(result)) {
             return
         }
+        when (target) {
+            is VlcRenderTarget.VideoLayout -> snapshotWindow(target.layout, width, height, result)
+            is VlcRenderTarget.Texture -> snapshotSurface(width, height, result)
+        }
+    }
+
+    private fun snapshotWindow(
+        videoLayout: VLCVideoLayout,
+        width: Int,
+        height: Int,
+        result: MethodChannel.Result,
+    ) {
         val activity = activityFrom(context)
         if (activity == null) {
             result.error("snapshot_failed", "Unable to locate the Android activity window.", null)
@@ -278,20 +397,47 @@ internal class VlcPlayerPlatformView(
         val bitmap = Bitmap.createBitmap(snapshotWidth, snapshotHeight, Bitmap.Config.ARGB_8888)
 
         PixelCopy.request(activity.window, sourceRect, bitmap, { copyResult ->
-            if (copyResult != PixelCopy.SUCCESS) {
-                bitmap.recycle()
-                result.error("snapshot_failed", "Android PixelCopy failed with code $copyResult.", null)
-                return@request
-            }
-            val output = ByteArrayOutputStream()
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                bitmap.recycle()
-                result.error("snapshot_failed", "Android failed to encode the snapshot PNG.", null)
-                return@request
-            }
-            bitmap.recycle()
-            result.success(output.toByteArray())
+            deliverSnapshot(copyResult, bitmap, result)
         }, mainHandler)
+    }
+
+    /// Copies the last buffer libVLC queued to the texture's surface.
+    ///
+    /// There is no window region to copy on this target: the frame belongs to
+    /// Flutter's compositor, not to a View. Reading the surface's last queued
+    /// buffer also means the copy is the decoder's output as libVLC left it -
+    /// the widget's fit is not applied and nothing drawn over the video is in
+    /// it, which is the better snapshot anyway.
+    private fun snapshotSurface(width: Int, height: Int, result: MethodChannel.Result) {
+        val surface = attachedSurface
+        val track = mediaPlayer.currentVideoTrack
+        if (surface == null || !surface.isValid || track == null || track.width <= 0 || track.height <= 0) {
+            result.error("snapshot_failed", "The video has no rendered frame.", null)
+            return
+        }
+        val snapshotWidth = if (width > 0) width else track.width
+        val snapshotHeight = if (height > 0) height else track.height
+        val bitmap = Bitmap.createBitmap(snapshotWidth, snapshotHeight, Bitmap.Config.ARGB_8888)
+
+        PixelCopy.request(surface, bitmap, { copyResult ->
+            deliverSnapshot(copyResult, bitmap, result)
+        }, mainHandler)
+    }
+
+    private fun deliverSnapshot(copyResult: Int, bitmap: Bitmap, result: MethodChannel.Result) {
+        if (copyResult != PixelCopy.SUCCESS) {
+            bitmap.recycle()
+            result.error("snapshot_failed", "Android PixelCopy failed with code $copyResult.", null)
+            return
+        }
+        val output = ByteArrayOutputStream()
+        if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+            bitmap.recycle()
+            result.error("snapshot_failed", "Android failed to encode the snapshot PNG.", null)
+            return
+        }
+        bitmap.recycle()
+        result.success(output.toByteArray())
     }
 
     fun getAudioTracks(result: MethodChannel.Result) {
@@ -309,6 +455,8 @@ internal class VlcPlayerPlatformView(
             result.error("track_not_found", "Audio track $id was not found.", null)
             return
         }
+        // ESSelected will follow, but the caller is waiting on this value now.
+        sendSnapshot(force = true)
         result.success(null)
     }
 
@@ -327,6 +475,7 @@ internal class VlcPlayerPlatformView(
             result.error("track_not_found", "Subtitle track $id was not found.", null)
             return
         }
+        sendSnapshot(force = true)
         result.success(null)
     }
 
@@ -335,6 +484,7 @@ internal class VlcPlayerPlatformView(
             return
         }
         mediaPlayer.setSpuTrack(-1)
+        sendSnapshot(force = true)
         result.success(null)
     }
 
@@ -346,6 +496,15 @@ internal class VlcPlayerPlatformView(
             result.error("add_subtitle_failed", "Failed to add subtitle: $uri", null)
             return
         }
+        // Unlike setAudioTrack / setSpuTrack above, this one cannot report its
+        // own result: libVLC 3 posts an added slave to the input thread, so
+        // addSlave returning true only means it was accepted and this snapshot
+        // still carries the pre-add spuTracks. It is forced to keep the rest of
+        // the payload fresh, not to announce the subtitle. The text-stream
+        // MediaPlayer.Event.ESAdded is what bumps trackRevision once the track
+        // really exists, and that revision - not this result - is the signal a
+        // caller has to wait on.
+        sendSnapshot(force = true)
         result.success(null)
     }
 
@@ -410,13 +569,26 @@ internal class VlcPlayerPlatformView(
             return
         }
         disposed = true
+        audioFocus.dispose()
         eventChannel.setStreamHandler(null)
         mediaPlayer.setEventListener(null)
-        videoLayout.removeOnAttachStateChangeListener(attachStateListener)
-        videoLayout.removeOnLayoutChangeListener(layoutChangeListener)
+        when (target) {
+            is VlcRenderTarget.VideoLayout -> {
+                target.layout.removeOnAttachStateChangeListener(attachStateListener)
+                target.layout.removeOnLayoutChangeListener(layoutChangeListener)
+            }
+            is VlcRenderTarget.Texture -> target.producer.setCallback(null)
+        }
         mediaPlayer.vlcVout.removeCallback(voutCallback)
         mediaPlayer.stop()
         releaseViews()
+        // Producer between the vout and the player: releasing it closes the
+        // ImageReader behind the surface, so libVLC has to have let go of that
+        // surface first (releaseViews, above) and the player, which no longer
+        // has anywhere to draw, goes last.
+        if (target is VlcRenderTarget.Texture) {
+            target.producer.release()
+        }
         mediaPlayer.release()
         libVLC.release()
         onDispose(viewId, this)
@@ -450,10 +622,13 @@ internal class VlcPlayerPlatformView(
                 // was wrong, and every host feature gated on "playing" -
                 // progress, scrobbling, completion, next episode - silently
                 // stopped working. Only a partial buffer is a real stall.
-                if (percent < 100.0f) {
-                    updateState(STATE_BUFFERING)
-                } else if (mediaPlayer.isPlaying) {
-                    updateState(STATE_PLAYING)
+                //
+                // And only on a player that is actually running. A pause lands
+                // while the demuxer is mid-fill, so a trailing Buffering below
+                // 100 can arrive after Paused and would overwrite STATE_PAUSED
+                // with a spinner over a frame the viewer asked to hold.
+                if (mediaPlayer.isPlaying) {
+                    updateState(if (percent < 100.0f) STATE_BUFFERING else STATE_PLAYING)
                 }
             }
             MediaPlayer.Event.Playing -> {
@@ -466,10 +641,19 @@ internal class VlcPlayerPlatformView(
             }
             MediaPlayer.Event.Stopped -> {
                 bufferingProgress = null
+                // Focus is deliberately not abandoned here. Replacing the media
+                // on a running player emits Stopped, and this event arrives a
+                // main-thread hop later - after setSource has already taken
+                // focus for the next item, which this would then throw away.
+                // The deliberate stop() abandons on its own.
                 updateState(STATE_STOPPED)
             }
             MediaPlayer.Event.EndReached -> {
                 bufferingProgress = null
+                // Nothing left to play: hold audio no longer, so whatever was
+                // ducked or paused behind us can come back on its own. A
+                // playlist advancing takes it straight back.
+                audioFocus.abandon()
                 updateState(STATE_ENDED)
             }
             MediaPlayer.Event.EncounteredError -> {
@@ -483,11 +667,90 @@ internal class VlcPlayerPlatformView(
             MediaPlayer.Event.LengthChanged,
             MediaPlayer.Event.SeekableChanged,
             MediaPlayer.Event.Vout,
-            MediaPlayer.Event.ESAdded,
-            MediaPlayer.Event.ESDeleted,
             MediaPlayer.Event.ESSelected,
             -> sendSnapshot()
+            MediaPlayer.Event.ESAdded,
+            MediaPlayer.Event.ESDeleted,
+            -> {
+                // Only the audio and subtitle lists are published, and libVLC
+                // announces the video ES here too. A rendition change or an
+                // MPEG-TS PMT update re-announces video on its own, and
+                // bumping for that reloads a track list that did not change:
+                // the panel blinks to a spinner and the D-pad cursor jumps
+                // back to the active row from wherever the viewer had it.
+                if (event.esChangedType == IMedia.Track.Type.Audio ||
+                    event.esChangedType == IMedia.Track.Type.Text
+                ) {
+                    trackRevision += 1
+                }
+                sendSnapshot()
+            }
         }
+    }
+
+    /// Claims audio focus, and says whether playback may start.
+    ///
+    /// A refusal is reported as an interruption rather than swallowed: it is
+    /// why the play button appeared to do nothing, and it is what tells the
+    /// Dart side to resume when the delayed grant lands after the call.
+    private fun requestAudioFocusToPlay(): Boolean {
+        if (audioFocus.request()) {
+            return true
+        }
+        interruption = INTERRUPTION_FOCUS_LOST_TRANSIENT
+        sendSnapshot()
+        return false
+    }
+
+    /// Pauses for an interruption the viewer did not ask for.
+    ///
+    /// The pause happens here rather than after a round trip to Dart because
+    /// audio focus has to be honoured in the instant it moves - a film that
+    /// waits for an event channel talks over the first ring of a phone call.
+    private fun interruptPlayback(reason: String) {
+        if (disposed) {
+            return
+        }
+        restoreDuckedVolume()
+        if (mediaPlayer.isPlaying) {
+            interruption = reason
+            mediaPlayer.pause()
+            updateState(STATE_PAUSED)
+            return
+        }
+        if (interruption != INTERRUPTION_NONE) {
+            // Already silent for an earlier interruption. A transient loss that
+            // turned permanent is still worth saying, because it withdraws the
+            // promise that anything is coming back.
+            interruption = reason
+            sendSnapshot()
+            return
+        }
+        // Nothing was playing and nothing had interrupted it. Reporting one
+        // would make a player the viewer paused themselves look system-paused,
+        // and invite a resume they never asked for.
+    }
+
+    private fun applyVolume() {
+        mediaPlayer.volume = (volume * duckFactor).toInt().coerceIn(0, 200)
+    }
+
+    private fun restoreDuckedVolume() {
+        if (duckFactor == 1.0f) {
+            return
+        }
+        duckFactor = 1.0f
+        applyVolume()
+    }
+
+    /// Drops the system's claim, restoring whatever it changed.
+    ///
+    /// Called from the deliberate-intent entry points: once the viewer has
+    /// pressed something, the interruption no longer explains what the player
+    /// is doing.
+    private fun clearInterruption() {
+        restoreDuckedVolume()
+        interruption = INTERRUPTION_NONE
     }
 
     private fun updateState(state: String) {
@@ -499,6 +762,11 @@ internal class VlcPlayerPlatformView(
     ///
     /// setVideoScale is already a runtime call on MediaPlayer; only the Dart
     /// side forced a rebuild, by folding `fit` into the platform-view key.
+    ///
+    /// A texture-backed player is fitted in Dart, by the widget that owns the
+    /// Texture. setVideoScale is a no-op without a VLCVideoLayout behind it, so
+    /// nothing needs guarding here; the value is kept so a later attach of a
+    /// view target would still honour it.
     fun setFit(fit: String, result: MethodChannel.Result) {
         if (disposed) {
             result.error("disposed", "This player has been disposed.", null)
@@ -510,13 +778,68 @@ internal class VlcPlayerPlatformView(
     }
 
     private fun attachViewsIfNeeded() {
-        if (disposed || viewsAttached || !videoLayout.isAttachedToWindow) {
+        if (disposed || viewsAttached) {
             return
         }
-        releaseViews()
-        mediaPlayer.attachViews(videoLayout, null, false, true)
-        mediaPlayer.setVideoScale(videoScale)
+        when (target) {
+            is VlcRenderTarget.VideoLayout -> {
+                if (!target.layout.isAttachedToWindow) {
+                    return
+                }
+                releaseViews()
+                mediaPlayer.attachViews(target.layout, null, false, true)
+                mediaPlayer.setVideoScale(videoScale)
+            }
+            is VlcRenderTarget.Texture -> {
+                val surface = target.producer.surface
+                if (surface == null || !surface.isValid) {
+                    return
+                }
+                releaseViews()
+                val vout = mediaPlayer.vlcVout
+                // Video only. There is no second surface for subtitles, so
+                // libVLC blends them into the picture; see VlcRenderTarget.
+                vout.setVideoSurface(surface, null)
+                vout.attachViews(videoLayoutListener)
+                attachedSurface = surface
+                if (videoLayoutWidth > 0 && videoLayoutHeight > 0) {
+                    vout.setWindowSize(videoLayoutWidth, videoLayoutHeight)
+                }
+            }
+        }
         viewsAttached = true
+    }
+
+    /// libVLC has opened its display and knows the picture it will draw.
+    ///
+    /// The window is told it is exactly the visible picture, so libVLC places
+    /// the video 1:1 and neither scales nor letterboxes inside the buffer -
+    /// fit belongs to the widget. The producer is told the same size so the
+    /// ImageReader the engine builds is the video's, not a placeholder.
+    ///
+    /// What deliberately does NOT happen here is a re-attach. On API 29+ the
+    /// engine answers setSize by minting a new ImageReader on the next
+    /// getSurface(), and swapping libVLC onto it would go through
+    /// MediaPlayer's own surface callback, which disables and re-enables the
+    /// video track - a decoder restart and a wait for the next keyframe, at
+    /// the first frame of every stream. The buffers MediaCodec queues carry
+    /// their own dimensions and crop, which the engine honours
+    /// (handlesCropAndRotation), so the surface libVLC already holds keeps
+    /// showing the right picture; the resized reader is picked up the next
+    /// time the engine recycles the surface anyway.
+    private fun onNewVideoLayout(width: Int, height: Int) {
+        if (disposed || width <= 0 || height <= 0) {
+            return
+        }
+        val producer = (target as? VlcRenderTarget.Texture)?.producer ?: return
+        if (width == videoLayoutWidth && height == videoLayoutHeight) {
+            return
+        }
+        videoLayoutWidth = width
+        videoLayoutHeight = height
+        producer.setSize(width, height)
+        mediaPlayer.vlcVout.setWindowSize(width, height)
+        sendSnapshot()
     }
 
     private fun scheduleAttachViews() {
@@ -537,7 +860,12 @@ internal class VlcPlayerPlatformView(
     private fun releaseViews() {
         detachingViews = true
         try {
+            // MediaPlayer.detachViews() only releases the VLCVideoLayout helper;
+            // a raw surface is let go on the vout itself. Each is a no-op for
+            // the target that did not use it.
             mediaPlayer.detachViews()
+            mediaPlayer.vlcVout.detachViews()
+            attachedSurface = null
             viewsAttached = false
         } finally {
             detachingViews = false
@@ -638,9 +966,14 @@ internal class VlcPlayerPlatformView(
         event["playbackSpeed"] = playbackSpeed.toDouble()
         event["audioDelay"] = mediaPlayer.audioDelay
         event["subtitleDelay"] = mediaPlayer.spuDelay
+        // -1 when there is none / subtitles are off; Dart normalises to null.
+        event["audioTrack"] = mediaPlayer.audioTrack
+        event["subtitleTrack"] = mediaPlayer.spuTrack
+        event["trackRevision"] = trackRevision
         event["isReady"] = isReadyState(state)
         event["isSeekable"] = isSeekable
         event["isLive"] = isLiveState(state) && duration == 0L && !isSeekable
+        event["interruption"] = interruption
         videoSize()?.let {
             event["videoSize"] = it
         }
@@ -704,6 +1037,15 @@ internal class VlcPlayerPlatformView(
         const val STATE_STOPPED = "stopped"
         const val STATE_ENDED = "ended"
         const val STATE_ERROR = "error"
+        const val INTERRUPTION_NONE = "none"
+        const val INTERRUPTION_FOCUS_LOST = "focusLost"
+        const val INTERRUPTION_FOCUS_LOST_TRANSIENT = "focusLostTransient"
+        const val INTERRUPTION_DUCKED = "ducked"
+        const val INTERRUPTION_BECAME_NOISY = "becameNoisy"
+
+        // Roughly the attenuation a system notification ducks other audio by.
+        const val DUCK_FACTOR = 0.3f
+
         const val ERROR_PLAYBACK = "playback_error"
         const val ERROR_SET_SOURCE_FAILED = "set_source_failed"
 

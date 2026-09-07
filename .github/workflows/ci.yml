@@ -1,0 +1,179 @@
+# Fast pre-merge gate. The release/preview workflows are workflow_dispatch-only,
+# so before this existed nothing at all ran on a pull request and the vendored
+# native plugin was first compiled during a manual release build.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+# A new push to the same PR makes the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned rather than floating on `stable`: the analyzer, the lint set and the
+  # gen-l10n output all move with the SDK, so an unpinned runner would rewrite
+  # the baseline under us and fail a PR that touched nothing.
+  FLUTTER_VERSION: 3.47.1
+
+jobs:
+  analyze-and-test:
+    name: Analyze & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.lock', 'packages/*/pubspec.yaml') }}
+          restore-keys: ${{ runner.os }}-pub-
+
+      # Two different kinds of generated code, and only one of them is checked
+      # in. lib/l10n/generated/** is committed, so gen-l10n here is a drift
+      # check (see the next step). *.g.dart is gitignored, so without
+      # build_runner the analyzer reports thousands of phantom
+      # undefined_identifier errors - it has to run before analyze, not after.
+      - name: Install Dependencies
+        run: |
+          flutter pub get
+          flutter gen-l10n
+          dart run build_runner build --delete-conflicting-outputs
+
+      # An ARB edited without re-running gen-l10n ships nothing: the app reads
+      # the committed Dart, not the .arb. Cheap to catch, invisible otherwise.
+      - name: Check gen-l10n Output Is Committed
+        run: |
+          if ! git diff --exit-code --stat -- lib/l10n/generated; then
+            echo "::error::lib/l10n/generated is stale. Run 'flutter gen-l10n' and commit the result."
+            exit 1
+          fi
+
+      # gen-l10n wrote the per-locale backlog to build/l10n_untranslated.json
+      # (configured in l10n.yaml). Blocking on the founding locales only; the
+      # other 39 arrived in one bulk import and warn instead.
+      - name: Translation Coverage
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+
+          # hi and kn are the only locales the repo has ever treated as
+          # first-class: they were hand-authored alongside en across three
+          # commits before the other 39 landed in a single bulk import, and
+          # they still carry the fewest values left verbatim in English.
+          TOP_TIER = {'hi', 'kn'}
+          # Every locale is short the same 62 keys from the player migration.
+          # The ratchet may fall, never rise; drop it as translations land.
+          BACKLOG = 62
+
+          report = pathlib.Path('build/l10n_untranslated.json')
+          if not report.exists():
+              sys.exit('::error::gen-l10n wrote no untranslated report; check untranslated-messages-file in l10n.yaml')
+
+          missing = {loc: set(keys) for loc, keys in json.loads(report.read_text()).items()}
+          if not missing:
+              print('Every locale is complete.')
+              sys.exit(0)
+
+          # A key that some other locale has already translated is not part of
+          # the shared backlog - it is a top-tier locale falling behind, which
+          # is the case worth blocking a merge over.
+          shared = set.intersection(*missing.values())
+          behind = set().union(*missing.values()) - shared
+
+          failures = []
+          for loc in sorted(TOP_TIER):
+              keys = missing.get(loc, set())
+              lagging = sorted(keys & behind)
+              if lagging:
+                  failures.append(f'{loc} is missing {len(lagging)} key(s) other locales already have: {", ".join(lagging[:10])}')
+              if len(keys) > BACKLOG:
+                  failures.append(f'{loc} is missing {len(keys)} keys, above the {BACKLOG} the backlog ratchet allows')
+
+          for loc in sorted(missing, key=lambda l: (-len(missing[l]), l)):
+              tier = 'BLOCKING' if loc in TOP_TIER else 'warn'
+              line = f'{loc}: {len(missing[loc])} untranslated ({tier})'
+              print(line)
+              if loc not in TOP_TIER:
+                  print(f'::warning::{line}')
+
+          if failures:
+              for f in failures:
+                  print(f'::error::{f}')
+              sys.exit(1)
+          PY
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      # vlc_player is a path dependency, so it needs its own package_config.
+      # The root analysis_options excludes packages/**, so the fork is only
+      # ever analysed here. It has no build_runner step of its own - nothing
+      # under packages/vlc_player is generated.
+      - name: Analyze & Test vlc_player
+        working-directory: packages/vlc_player
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  linux-native:
+    name: Linux Native Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      # Same set the release workflow installs, which is the only evidence we
+      # have that it is sufficient. libvlc-dev is what the vendored vlc_player
+      # plugin links against; libsecret-1-dev is flutter_secure_storage_linux.
+      # package:jni is an FFI plugin here and looks for a JDK, but its CMake
+      # falls through to an empty target when one is absent, so it needs no
+      # apt package of its own.
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=30
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libvlc-dev libasound2-dev libsecret-1-dev
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.lock', 'packages/*/pubspec.yaml') }}
+          restore-keys: ${{ runner.os }}-pub-
+
+      - name: Install Flutter Dependencies
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+          flutter gen-l10n
+          dart run build_runner build --delete-conflicting-outputs
+
+      # Debug, and without --dart-define-from-file: this job only has to prove
+      # the C++ in packages/ still compiles, and fork PRs cannot read secrets.
+      - name: Build Linux
+        run: flutter build linux --debug

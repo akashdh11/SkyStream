@@ -85,16 +85,21 @@ class _Row {
   static final RegExp _sd = RegExp(r'\b(480|sd)\b', caseSensitive: false);
   static final RegExp _low = RegExp(r'\b(360)\b', caseSensitive: false);
 
+  /// Scrapers label quality inconsistently, so bare tokens like `fhd` or
+  /// `1080` are honoured — but only in the metadata a scraper authored. A URL
+  /// is full of unrelated numbers (`?exp=360`, `?id=1080&t=1`) that would
+  /// otherwise score a junk link as the best source in the list, so it is
+  /// only searched for the unambiguous `1080p` / `1080i` form.
   int get qualityScore {
-    final text = '${nuvio.quality ?? ''} ${nuvio.title} ${nuvio.url}';
-    if (_uhd.hasMatch(text)) return 2160;
-    if (_qhd.hasMatch(text)) return 1440;
-    final match = _res.firstMatch(text);
+    final meta = '${nuvio.quality ?? ''} ${nuvio.title}';
+    if (_uhd.hasMatch(meta)) return 2160;
+    if (_qhd.hasMatch(meta)) return 1440;
+    final match = _res.firstMatch('$meta ${nuvio.url}');
     if (match != null) return int.tryParse(match.group(1)!) ?? 0;
-    if (_fhd.hasMatch(text)) return 1080;
-    if (_hd.hasMatch(text)) return 720;
-    if (_sd.hasMatch(text)) return 480;
-    if (_low.hasMatch(text)) return 360;
+    if (_fhd.hasMatch(meta)) return 1080;
+    if (_hd.hasMatch(meta)) return 720;
+    if (_sd.hasMatch(meta)) return 480;
+    if (_low.hasMatch(meta)) return 360;
     return 0;
   }
 
@@ -120,6 +125,97 @@ class _Row {
   String get key => 'nuvio:${nuvio.scraperId}:${nuvio.url}';
 
   StreamResult toStreamResult() => nuvio.toStreamResult();
+}
+
+/// Colours for the frosted panel the sheet paints on.
+///
+/// The panel is not a themed surface — it is a blurred tint over whatever is
+/// behind the dialog — so its fills, hairlines and labels cannot come from
+/// [ColorScheme] directly. Dark is the palette this sheet already shipped,
+/// value for value; light mirrors it so the sheet stays legible under
+/// [ThemeMode.light].
+class _GlassPalette {
+  /// Tint painted behind the blur.
+  final Color panel;
+
+  /// Maximum contrast against [panel]. Every overlay fill, hairline and label
+  /// on the glass is this colour at some alpha, and it is also the focus ring.
+  final Color ink;
+
+  /// Fill behind a focused source card.
+  final Color cardFocusFill;
+
+  /// Label colour of a highlighted primary chip, which fills with [ink].
+  final Color inkContent;
+
+  const _GlassPalette({
+    required this.panel,
+    required this.ink,
+    required this.cardFocusFill,
+    required this.inkContent,
+  });
+
+  factory _GlassPalette.of(BuildContext context) {
+    final theme = Theme.of(context);
+    if (theme.brightness == Brightness.dark) {
+      return const _GlassPalette(
+        panel: Color(0xA6060608),
+        ink: Colors.white,
+        cardFocusFill: Color(0xFF242430),
+        inkContent: sourceSheetAccent,
+      );
+    }
+    final cs = theme.colorScheme;
+    return _GlassPalette(
+      panel: const Color(0xD9FCFAF7),
+      ink: cs.onSurface,
+      cardFocusFill: cs.surfaceContainerHighest,
+      inkContent: cs.surface,
+    );
+  }
+
+  Color tint(double alpha) => ink.withValues(alpha: alpha);
+}
+
+/// Section chrome in the flattened list.
+enum _SectionKind { topPick, ready, unavailableToggle }
+
+/// One entry of the flattened list the sheet renders.
+///
+/// [ListView.builder] needs an index-addressable model, and the sections
+/// (Top pick / Ready / Unavailable) are otherwise nested. Describing each
+/// entry instead of building it keeps a row's three [FocusNode]s off the heap
+/// until it scrolls into view, and stops every probe result from rebuilding
+/// every row.
+sealed class _Entry {
+  /// Gap below this entry, reproducing the spacing of the nested layout.
+  final double gap;
+
+  const _Entry({required this.gap});
+}
+
+class _SectionEntry extends _Entry {
+  final _SectionKind kind;
+  final int count;
+
+  const _SectionEntry(this.kind, {required this.count, required super.gap});
+}
+
+class _RowEntry extends _Entry {
+  final _Row row;
+  final bool isBest;
+  final bool autofocus;
+
+  /// Unavailable rows are shown faded, as in the collapsed section.
+  final bool faded;
+
+  const _RowEntry(
+    this.row, {
+    required this.isBest,
+    required this.autofocus,
+    required this.faded,
+    required super.gap,
+  });
 }
 
 class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
@@ -206,6 +302,9 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
       _nuvioResult = const NuvioProgress(isLoading: true);
       _probes.clear();
       _probing.clear();
+      // A new search is a new list; let it place focus again.
+      _autofocusClaimed = false;
+      _focusedRowKey = null;
     });
     await _nuvioSub?.cancel();
     _startNuvio();
@@ -253,6 +352,10 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
       return false;
     }
     if (_hdOnly && row.qualityScore < 1080) return false;
+    // Opened to download: a stream-only link is not a candidate. Matches the
+    // addon sheet, and restores the filter PR #98 dropped along with the
+    // Play/Download toggle.
+    if (_downloadMode && !row.canDownload) return false;
     if (_verifiedOnly) {
       final probe = _probes[row.url];
       if (probe == null || !probe.reachable) return false;
@@ -342,6 +445,7 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
   }
 
   Widget _diagnosticsPanel(ThemeData theme, ColorScheme cs) {
+    final palette = _GlassPalette.of(context);
     final statuses = _nuvioResult.statuses.toList()
       ..sort((a, b) => a.scraperName.compareTo(b.scraperName));
     return Container(
@@ -349,9 +453,9 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
+        color: palette.tint(0.05),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        border: Border.all(color: palette.tint(0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -363,7 +467,7 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
                   'Nuvio scrapers · ${statuses.length}',
                   style: theme.textTheme.labelMedium?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: palette.ink,
                   ),
                 ),
               ),
@@ -424,18 +528,60 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
 
   bool _showUnavailable = false;
 
-  bool _isRowUnavailable(_Row row) {
-    final probe = _probes[row.url];
-    if (probe == null) return false;
-    if (probe.reachable) return false;
+  /// Key of the row focus currently sits on, and the section it was in when
+  /// focus arrived.
+  ///
+  /// Probes land for seconds after the sheet opens, and each result can
+  /// re-bucket a row. On TV that pulls the card out from under the user: the
+  /// unavailable section is collapsed by default, so the focused row is
+  /// unmounted and focus falls back to the scope root with no ring anywhere on
+  /// screen. A row keeps whichever section it was in for as long as it holds
+  /// focus, and moves once the user steps off it.
+  String? _focusedRowKey;
+  bool _focusedRowWasUnavailable = false;
+
+  /// Autofocus is a one-shot. Rows are keyed now, so a scraper that reports a
+  /// new best link mounts a fresh top-pick row; without this it would claim
+  /// focus back off whatever the user had already walked to.
+  bool _autofocusClaimed = false;
+
+  /// Both actions sit on every row, so [PluginSourcesSheet.mode] decides only
+  /// what activating the card body does and which rows are worth listing. PR
+  /// #98 dropped the Play/Download segmented toggle but left the parameter
+  /// declared and unread; callers that open the sheet to download get that
+  /// behaviour back here.
+  bool get _downloadMode => widget.mode == SourcesMode.download;
+
+  void _handleRowFocusChange(_Row row, bool focused) {
+    if (focused) {
+      _autofocusClaimed = true;
+      _focusedRowKey = row.key;
+      _focusedRowWasUnavailable = _probeSaysUnavailable(row);
+      return;
+    }
+    if (_focusedRowKey != row.key) return;
+    final wasPinned = _focusedRowWasUnavailable != _probeSaysUnavailable(row);
+    _focusedRowKey = null;
+    // Only a row that was being held out of its section needs a rebuild.
+    if (wasPinned && mounted) setState(() {});
+  }
+
+  bool _probeSaysUnavailable(_Row row) {
     // Any probe that completed and is not reachable is unavailable (HTTP error, timeout, 404, etc.)
-    return true;
+    final probe = _probes[row.url];
+    return probe != null && !probe.reachable;
+  }
+
+  bool _isRowUnavailable(_Row row) {
+    if (row.key == _focusedRowKey) return _focusedRowWasUnavailable;
+    return _probeSaysUnavailable(row);
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final palette = _GlassPalette.of(context);
     final episode = widget.episode;
 
     final visible = _visible;
@@ -444,8 +590,9 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
     final nuvioCount = _nuvioResult.streams.length;
 
     // Counts for subtitle
-    final workingCount =
-        _allRows.where((r) => _probes[r.url]?.reachable == true).length;
+    final workingCount = _allRows
+        .where((r) => _probes[r.url]?.reachable == true)
+        .length;
     final unavailableCount = _allRows.where(_isRowUnavailable).length;
 
     String subtitleText;
@@ -475,8 +622,11 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
       }
     }
 
-    final topPick = readyRows.isNotEmpty ? readyRows.first : null;
-    final remainingReady = readyRows.length > 1 ? readyRows.sublist(1) : <_Row>[];
+    final entries = _entriesFor(readyRows, unavailableRows);
+    final rowIndexByKey = <Key, int>{
+      for (var i = 0; i < entries.length; i++)
+        if (entries[i] case _RowEntry(:final row)) ValueKey(row.key): i,
+    };
 
     // Dynamic Capsule: Centered floating glass island.
     return Dialog(
@@ -498,483 +648,624 @@ class _PluginSourcesSheetState extends ConsumerState<PluginSourcesSheet> {
                     maxWidth: 580,
                     maxHeight: 680,
                   ),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.50),
-                  blurRadius: 50,
-                  spreadRadius: 0,
-                  offset: const Offset(0, 10),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // 1. LAYERED TRANSLUCENT OBSIDIAN/CHARCOAL BLACK BASE WITH BACKDROP BLUR
-                  Positioned.fill(
-                    child: BackdropFilter(
-                      filter: ui.ImageFilter.blur(sigmaX: 22.0, sigmaY: 22.0),
-                      child: const DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: Color(0xA6060608), // Frosted glass obsidian tint (65% opacity)
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.50),
+                          blurRadius: 50,
+                          spreadRadius: 0,
+                          offset: const Offset(0, 10),
                         ),
-                      ),
+                      ],
                     ),
-                  ),
-                  // 4. FRESNEL EDGE HIGHLIGHTS WITH SOFT GRADIENT BLENDING
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: ShaderMask(
-                        shaderCallback: (rect) {
-                          return const LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.transparent,
-                              Colors.white,
-                              Colors.white,
-                              Colors.transparent,
-                            ],
-                            stops: [0.0, 0.15, 0.85, 1.0],
-                          ).createShader(rect);
-                        },
-                        blendMode: BlendMode.dstIn,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.12),
-                              width: 0.5,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          // 1. LAYERED TRANSLUCENT OBSIDIAN/CHARCOAL BLACK BASE WITH BACKDROP BLUR
+                          Positioned.fill(
+                            child: BackdropFilter(
+                              filter: ui.ImageFilter.blur(
+                                sigmaX: 22.0,
+                                sigmaY: 22.0,
+                              ),
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: palette
+                                      .panel, // Frosted glass tint (65% opacity)
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  // Main content
-                  Positioned.fill(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Header Bar
-                        Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 14, 12, 4),
-                      child: Row(
-                        children: [
-                          Expanded(
+                          // 4. FRESNEL EDGE HIGHLIGHTS WITH SOFT GRADIENT BLENDING
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              child: ShaderMask(
+                                shaderCallback: (rect) {
+                                  return const LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.transparent,
+                                      Colors.white,
+                                      Colors.white,
+                                      Colors.transparent,
+                                    ],
+                                    stops: [0.0, 0.15, 0.85, 1.0],
+                                  ).createShader(rect);
+                                },
+                                blendMode: BlendMode.dstIn,
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: palette.tint(0.12),
+                                      width: 0.5,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          // Main content
+                          Positioned.fill(
                             child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Text(
-                                  'Nuvio Sources',
-                                  style: theme.textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
-                                    letterSpacing: -0.2,
+                                // Header Bar
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    18,
+                                    14,
+                                    12,
+                                    4,
                                   ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  subtitleText,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: cs.onSurfaceVariant,
-                                    fontSize: 11.5,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          // Accessibility Search Button: Icon in accent on accent-filled circle
-                          Container(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: cs.primary.withValues(alpha: 0.15),
-                            ),
-                            child: IconButton(
-                              tooltip: 'Search manually',
-                              visualDensity: VisualDensity.compact,
-                              icon: Icon(
-                                Icons.search_rounded,
-                                size: 19,
-                                color: cs.primary,
-                              ),
-                              onPressed: () => unawaited(_searchManually()),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          // Accessibility Close Button: Icon in danger, transparent bg, danger hover/tap
-                          IconButton(
-                            tooltip: 'Close',
-                            visualDensity: VisualDensity.compact,
-                            icon: const Icon(
-                              Icons.close_rounded,
-                              size: 20,
-                              color: Color(0xFFEF4444),
-                            ),
-                            hoverColor: const Color(0xFFEF4444).withValues(alpha: 0.15),
-                            highlightColor: const Color(0xFFEF4444).withValues(alpha: 0.2),
-                            onPressed: () => Navigator.of(context).pop(),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Telemetry Status Strip
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 4, 18, 4),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _isLoading
-                                  ? 'Searching scrapers… '
-                                        '${_nuvioResult.completedCount}/${_nuvioResult.totalCount}'
-                                  : '$nuvioCount links found',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: _isLoading ? cs.primary : cs.onSurfaceVariant,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          if (_isLoading)
-                            SizedBox(
-                              width: 80,
-                              child: LinearProgressIndicator(
-                                value: _nuvioResult.totalCount == 0
-                                    ? null
-                                    : _nuvioResult.completedCount /
-                                          _nuvioResult.totalCount,
-                                minHeight: 2.5,
-                                backgroundColor: Colors.white10,
-                                valueColor: AlwaysStoppedAnimation(cs.primary),
-                              ),
-                            )
-                          else if (_nuvioResult.hasWork)
-                            TextButton(
-                              style: TextButton.styleFrom(
-                                padding: EdgeInsets.zero,
-                                minimumSize: const Size(50, 26),
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              ),
-                              onPressed: () => setState(
-                                () => _showDiagnostics = !_showDiagnostics,
-                              ),
-                              child: Text(
-                                _showDiagnostics ? 'Hide' : 'Details',
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-
-                    if (_showDiagnostics) _diagnosticsPanel(theme, cs),
-
-                    // Filter Chips Rail
-                    SizedBox(
-                      height: 34,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: FilterChip(
-                              visualDensity: VisualDensity.compact,
-                              label: const Text('1080p+', style: TextStyle(fontSize: 11)),
-                              selected: _hdOnly,
-                              selectedColor: cs.primary,
-                              labelStyle: TextStyle(
-                                fontSize: 11,
-                                color: _hdOnly ? cs.onPrimary : cs.onSurfaceVariant,
-                                fontWeight: _hdOnly ? FontWeight.w700 : FontWeight.w500,
-                              ),
-                              side: BorderSide(
-                                color: _hdOnly
-                                    ? Colors.transparent
-                                    : Colors.white.withValues(alpha: 0.15),
-                                width: 1,
-                              ),
-                              backgroundColor: Colors.transparent,
-                              onSelected: (value) => setState(() => _hdOnly = value),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: FilterChip(
-                              visualDensity: VisualDensity.compact,
-                              label: const Text('Tested', style: TextStyle(fontSize: 11)),
-                              selected: _verifiedOnly,
-                              selectedColor: cs.primary,
-                              labelStyle: TextStyle(
-                                fontSize: 11,
-                                color: _verifiedOnly ? cs.onPrimary : cs.onSurfaceVariant,
-                                fontWeight: _verifiedOnly ? FontWeight.w700 : FontWeight.w500,
-                              ),
-                              side: BorderSide(
-                                color: _verifiedOnly
-                                    ? Colors.transparent
-                                    : Colors.white.withValues(alpha: 0.15),
-                                width: 1,
-                              ),
-                              backgroundColor: Colors.transparent,
-                              onSelected: (value) =>
-                                  setState(() => _verifiedOnly = value),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                            ),
-                          ),
-                          for (final provider in providers)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 6),
-                              child: FilterChip(
-                                visualDensity: VisualDensity.compact,
-                                label: Text(provider, style: const TextStyle(fontSize: 11)),
-                                selected: _providerFilter.contains(provider),
-                                selectedColor: cs.primary,
-                                labelStyle: TextStyle(
-                                  fontSize: 11,
-                                  color: _providerFilter.contains(provider)
-                                      ? cs.onPrimary
-                                      : cs.onSurfaceVariant,
-                                  fontWeight: _providerFilter.contains(provider)
-                                      ? FontWeight.w700
-                                      : FontWeight.w500,
-                                ),
-                                side: BorderSide(
-                                  color: _providerFilter.contains(provider)
-                                      ? Colors.transparent
-                                      : Colors.white.withValues(alpha: 0.15),
-                                  width: 1,
-                                ),
-                                backgroundColor: Colors.transparent,
-                                onSelected: (value) => setState(() {
-                                  if (value) {
-                                    _providerFilter.add(provider);
-                                  } else {
-                                    _providerFilter.remove(provider);
-                                  }
-                                }),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 6),
-
-                    // Stream Source List (Structured with Top Pick, Ready, and Unavailable)
-                    Expanded(
-                      child: visible.isEmpty
-                          ? Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(24),
-                                child: Text(
-                                  _isLoading
-                                      ? 'Searching active scrapers…'
-                                      : (_allRows.isNotEmpty
-                                          ? 'No links match the current filters.'
-                                          : 'No links found. Verify scraper repos are installed.'),
-                                  textAlign: TextAlign.center,
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: cs.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            )
-                          : ListView(
-                              padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
-                              children: [
-                                // Top Pick Highlighted Section
-                                if (topPick != null) ...[
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 2, bottom: 6),
-                                    child: Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 7,
-                                            vertical: 2.5,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: cs.primary.withValues(alpha: 0.16),
-                                            borderRadius: BorderRadius.circular(4),
-                                          ),
-                                          child: Text(
-                                            'TOP PICK',
-                                            style: TextStyle(
-                                              color: cs.primary,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w800,
-                                              letterSpacing: 0.6,
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              'Nuvio Sources',
+                                              style: theme.textTheme.titleMedium
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w700,
+                                                    color: palette.ink,
+                                                    letterSpacing: -0.2,
+                                                  ),
                                             ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  _SourceRow(
-                                    row: topPick,
-                                    probe: _probes[topPick.url],
-                                    probing: _probing.contains(topPick.url),
-                                    isBest: true,
-                                    autofocus: true,
-                                    onPlay: () => _play(topPick),
-                                    onDownload: () => unawaited(_download(topPick)),
-                                  ),
-                                  const SizedBox(height: 12),
-                                ],
-
-                                // Remaining Ready to Play Section
-                                if (remainingReady.isNotEmpty) ...[
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 2, bottom: 6),
-                                    child: Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.play_circle_outline_rounded,
-                                          size: 14,
-                                          color: Color(0xFF10B981),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          'Ready to play (${remainingReady.length})',
-                                          style: const TextStyle(
-                                            color: Color(0xFF10B981),
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            letterSpacing: 0.2,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  for (int i = 0; i < remainingReady.length; i++) ...[
-                                    if (i > 0) const SizedBox(height: 6),
-                                    _SourceRow(
-                                      row: remainingReady[i],
-                                      probe: _probes[remainingReady[i].url],
-                                      probing: _probing.contains(remainingReady[i].url),
-                                      isBest: false,
-                                      autofocus: topPick == null && i == 0,
-                                      onPlay: () => _play(remainingReady[i]),
-                                      onDownload: () =>
-                                          unawaited(_download(remainingReady[i])),
-                                    ),
-                                  ],
-                                  const SizedBox(height: 12),
-                                ],
-
-                                // Unavailable Collapsed Section
-                                if (unavailableRows.isNotEmpty) ...[
-                                  DpadFocusable(
-                                    onSelect: () => setState(
-                                      () => _showUnavailable = !_showUnavailable,
-                                    ),
-                                    child: const SizedBox.shrink(),
-                                    builder: (context, state, _) {
-                                      final isFocused = state.focused;
-                                      return Container(
-                                        decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(
-                                            color: isFocused
-                                                ? Colors.white
-                                                : Colors.transparent,
-                                            width: 1.5,
-                                          ),
-                                        ),
-                                        child: InkWell(
-                                          borderRadius: BorderRadius.circular(8),
-                                          onTap: () => setState(
-                                            () => _showUnavailable = !_showUnavailable,
-                                          ),
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
-                                              vertical: 6,
-                                            ),
-                                            child: Row(
-                                              children: [
-                                                Text(
-                                                  '${unavailableRows.length} unavailable',
-                                                  style: TextStyle(
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              subtitleText,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
                                                     color: cs.onSurfaceVariant,
-                                                    fontSize: 12,
-                                                    fontWeight: FontWeight.w600,
+                                                    fontSize: 11.5,
                                                   ),
-                                                ),
-                                                const SizedBox(width: 4),
-                                                AnimatedRotation(
-                                                  turns: _showUnavailable ? 0.5 : 0.0,
-                                                  duration: const Duration(
-                                                    milliseconds: 200,
-                                                  ),
-                                                  child: Icon(
-                                                    Icons.keyboard_arrow_down_rounded,
-                                                    size: 18,
-                                                    color: cs.onSurfaceVariant,
-                                                  ),
-                                                ),
-                                              ],
                                             ),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                  if (_showUnavailable) ...[
-                                    const SizedBox(height: 6),
-                                    for (int i = 0; i < unavailableRows.length; i++) ...[
-                                      if (i > 0) const SizedBox(height: 6),
-                                      Opacity(
-                                        opacity: 0.55,
-                                        child: _SourceRow(
-                                          row: unavailableRows[i],
-                                          probe: _probes[unavailableRows[i].url],
-                                          probing: _probing.contains(unavailableRows[i].url),
-                                          isBest: false,
-                                          autofocus: false,
-                                          onPlay: () => _play(unavailableRows[i]),
-                                          onDownload: () =>
-                                              unawaited(_download(unavailableRows[i])),
+                                          ],
                                         ),
                                       ),
+                                      // Accessibility Search Button: Icon in accent on accent-filled circle
+                                      Container(
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: cs.primary.withValues(
+                                            alpha: 0.15,
+                                          ),
+                                        ),
+                                        child: IconButton(
+                                          tooltip: 'Search manually',
+                                          visualDensity: VisualDensity.compact,
+                                          icon: Icon(
+                                            Icons.search_rounded,
+                                            size: 19,
+                                            color: cs.primary,
+                                          ),
+                                          onPressed: () =>
+                                              unawaited(_searchManually()),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      // Accessibility Close Button: Icon in danger, transparent bg, danger hover/tap
+                                      IconButton(
+                                        tooltip: 'Close',
+                                        visualDensity: VisualDensity.compact,
+                                        icon: const Icon(
+                                          Icons.close_rounded,
+                                          size: 20,
+                                          color: Color(0xFFEF4444),
+                                        ),
+                                        hoverColor: const Color(
+                                          0xFFEF4444,
+                                        ).withValues(alpha: 0.15),
+                                        highlightColor: const Color(
+                                          0xFFEF4444,
+                                        ).withValues(alpha: 0.2),
+                                        onPressed: () =>
+                                            Navigator.of(context).pop(),
+                                      ),
                                     ],
-                                  ],
-                                ],
+                                  ),
+                                ),
+
+                                // Telemetry Status Strip
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    18,
+                                    4,
+                                    18,
+                                    4,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          _isLoading
+                                              ? 'Searching scrapers… '
+                                                    '${_nuvioResult.completedCount}/${_nuvioResult.totalCount}'
+                                              : '$nuvioCount links found',
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                                color: _isLoading
+                                                    ? cs.primary
+                                                    : cs.onSurfaceVariant,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                        ),
+                                      ),
+                                      if (_isLoading)
+                                        SizedBox(
+                                          width: 80,
+                                          child: LinearProgressIndicator(
+                                            value: _nuvioResult.totalCount == 0
+                                                ? null
+                                                : _nuvioResult.completedCount /
+                                                      _nuvioResult.totalCount,
+                                            minHeight: 2.5,
+                                            backgroundColor: palette.tint(0.1),
+                                            valueColor: AlwaysStoppedAnimation(
+                                              cs.primary,
+                                            ),
+                                          ),
+                                        )
+                                      else if (_nuvioResult.hasWork)
+                                        TextButton(
+                                          style: TextButton.styleFrom(
+                                            padding: EdgeInsets.zero,
+                                            minimumSize: const Size(50, 26),
+                                            tapTargetSize: MaterialTapTargetSize
+                                                .shrinkWrap,
+                                          ),
+                                          onPressed: () => setState(
+                                            () => _showDiagnostics =
+                                                !_showDiagnostics,
+                                          ),
+                                          child: Text(
+                                            _showDiagnostics
+                                                ? 'Hide'
+                                                : 'Details',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+
+                                if (_showDiagnostics)
+                                  _diagnosticsPanel(theme, cs),
+
+                                // Filter Chips Rail
+                                SizedBox(
+                                  height: 34,
+                                  child: ListView(
+                                    scrollDirection: Axis.horizontal,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                    ),
+                                    children: [
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: 6,
+                                        ),
+                                        child: FilterChip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: const Text(
+                                            '1080p+',
+                                            style: TextStyle(fontSize: 11),
+                                          ),
+                                          selected: _hdOnly,
+                                          selectedColor: cs.primary,
+                                          labelStyle: TextStyle(
+                                            fontSize: 11,
+                                            color: _hdOnly
+                                                ? cs.onPrimary
+                                                : cs.onSurfaceVariant,
+                                            fontWeight: _hdOnly
+                                                ? FontWeight.w700
+                                                : FontWeight.w500,
+                                          ),
+                                          side: BorderSide(
+                                            color: _hdOnly
+                                                ? Colors.transparent
+                                                : palette.tint(0.15),
+                                            width: 1,
+                                          ),
+                                          backgroundColor: Colors.transparent,
+                                          onSelected: (value) =>
+                                              setState(() => _hdOnly = value),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: 6,
+                                        ),
+                                        child: FilterChip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: const Text(
+                                            'Tested',
+                                            style: TextStyle(fontSize: 11),
+                                          ),
+                                          selected: _verifiedOnly,
+                                          selectedColor: cs.primary,
+                                          labelStyle: TextStyle(
+                                            fontSize: 11,
+                                            color: _verifiedOnly
+                                                ? cs.onPrimary
+                                                : cs.onSurfaceVariant,
+                                            fontWeight: _verifiedOnly
+                                                ? FontWeight.w700
+                                                : FontWeight.w500,
+                                          ),
+                                          side: BorderSide(
+                                            color: _verifiedOnly
+                                                ? Colors.transparent
+                                                : palette.tint(0.15),
+                                            width: 1,
+                                          ),
+                                          backgroundColor: Colors.transparent,
+                                          onSelected: (value) => setState(
+                                            () => _verifiedOnly = value,
+                                          ),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      for (final provider in providers)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            right: 6,
+                                          ),
+                                          child: FilterChip(
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            label: Text(
+                                              provider,
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                            selected: _providerFilter.contains(
+                                              provider,
+                                            ),
+                                            selectedColor: cs.primary,
+                                            labelStyle: TextStyle(
+                                              fontSize: 11,
+                                              color:
+                                                  _providerFilter.contains(
+                                                    provider,
+                                                  )
+                                                  ? cs.onPrimary
+                                                  : cs.onSurfaceVariant,
+                                              fontWeight:
+                                                  _providerFilter.contains(
+                                                    provider,
+                                                  )
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w500,
+                                            ),
+                                            side: BorderSide(
+                                              color:
+                                                  _providerFilter.contains(
+                                                    provider,
+                                                  )
+                                                  ? Colors.transparent
+                                                  : palette.tint(0.15),
+                                              width: 1,
+                                            ),
+                                            backgroundColor: Colors.transparent,
+                                            onSelected: (value) => setState(() {
+                                              if (value) {
+                                                _providerFilter.add(provider);
+                                              } else {
+                                                _providerFilter.remove(
+                                                  provider,
+                                                );
+                                              }
+                                            }),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 6),
+
+                                // Stream Source List (Structured with Top Pick, Ready, and Unavailable)
+                                Expanded(
+                                  child: visible.isEmpty
+                                      ? Center(
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(24),
+                                            child: Text(
+                                              _isLoading
+                                                  ? 'Searching active scrapers…'
+                                                  : (_allRows.isNotEmpty
+                                                        ? 'No links match the current filters.'
+                                                        : 'No links found. Verify scraper repos are installed.'),
+                                              textAlign: TextAlign.center,
+                                              style: theme.textTheme.bodyMedium
+                                                  ?.copyWith(
+                                                    color: cs.onSurfaceVariant,
+                                                  ),
+                                            ),
+                                          ),
+                                        )
+                                      : ListView.builder(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            14,
+                                            4,
+                                            14,
+                                            16,
+                                          ),
+                                          itemCount: entries.length,
+                                          // Keeps a reordered row's element — and with it
+                                          // its State and focus nodes — attached to the
+                                          // same source as probes reshuffle the list.
+                                          findChildIndexCallback: (key) =>
+                                              rowIndexByKey[key],
+                                          itemBuilder: (context, index) =>
+                                              _buildEntry(entries[index], cs),
+                                        ),
+                                ),
                               ],
                             ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Flattens the Top pick / Ready / Unavailable sections into the indexed
+  /// list [ListView.builder] walks, carrying the gap each entry used to get
+  /// from a [SizedBox] between siblings.
+  List<_Entry> _entriesFor(List<_Row> ready, List<_Row> unavailable) {
+    final entries = <_Entry>[];
+    final topPick = ready.isEmpty ? null : ready.first;
+    final rest = ready.length > 1 ? ready.sublist(1) : const <_Row>[];
+
+    if (topPick != null) {
+      entries.add(const _SectionEntry(_SectionKind.topPick, count: 1, gap: 6));
+      entries.add(
+        _RowEntry(
+          topPick,
+          isBest: true,
+          autofocus: !_autofocusClaimed,
+          faded: false,
+          gap: 12,
+        ),
+      );
+    }
+
+    if (rest.isNotEmpty) {
+      entries.add(
+        _SectionEntry(_SectionKind.ready, count: rest.length, gap: 6),
+      );
+      for (var i = 0; i < rest.length; i++) {
+        entries.add(
+          _RowEntry(
+            rest[i],
+            isBest: false,
+            autofocus: topPick == null && i == 0 && !_autofocusClaimed,
+            faded: false,
+            gap: i == rest.length - 1 ? 12 : 6,
+          ),
+        );
+      }
+    }
+
+    if (unavailable.isNotEmpty) {
+      entries.add(
+        _SectionEntry(
+          _SectionKind.unavailableToggle,
+          count: unavailable.length,
+          gap: _showUnavailable ? 6 : 0,
+        ),
+      );
+      if (_showUnavailable) {
+        for (var i = 0; i < unavailable.length; i++) {
+          entries.add(
+            _RowEntry(
+              unavailable[i],
+              isBest: false,
+              autofocus: false,
+              faded: true,
+              gap: i == unavailable.length - 1 ? 0 : 6,
+            ),
+          );
+        }
+      }
+    }
+
+    return entries;
+  }
+
+  Widget _buildEntry(_Entry entry, ColorScheme cs) {
+    switch (entry) {
+      case _SectionEntry(kind: _SectionKind.topPick):
+        return Padding(
+          padding: EdgeInsets.only(left: 2, bottom: entry.gap),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 7,
+                  vertical: 2.5,
+                ),
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'TOP PICK',
+                  style: TextStyle(
+                    color: cs.primary,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                  ),
                 ),
               ),
             ],
           ),
-        ),
-      ),
-    ),
-  ),
-),
-),
-),
-),
-);
+        );
+
+      case _SectionEntry(kind: _SectionKind.ready, :final count):
+        return Padding(
+          padding: EdgeInsets.only(left: 2, bottom: entry.gap),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.play_circle_outline_rounded,
+                size: 14,
+                color: Color(0xFF10B981),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Ready to play ($count)',
+                style: const TextStyle(
+                  color: Color(0xFF10B981),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ],
+          ),
+        );
+
+      case _SectionEntry(kind: _SectionKind.unavailableToggle, :final count):
+        final palette = _GlassPalette.of(context);
+        return Padding(
+          padding: EdgeInsets.only(bottom: entry.gap),
+          child: DpadFocusable(
+            onSelect: () =>
+                setState(() => _showUnavailable = !_showUnavailable),
+            child: const SizedBox.shrink(),
+            builder: (context, state, _) {
+              final isFocused = state.focused;
+              return Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: isFocused ? palette.ink : Colors.transparent,
+                    width: 1.5,
+                  ),
+                ),
+                child: InkWell(
+                  // DpadFocusable already owns this stop's focus node.
+                  canRequestFocus: false,
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () =>
+                      setState(() => _showUnavailable = !_showUnavailable),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 6,
+                    ),
+                    child: Row(
+                      children: [
+                        Text(
+                          '$count unavailable',
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        AnimatedRotation(
+                          turns: _showUnavailable ? 0.5 : 0.0,
+                          duration: const Duration(milliseconds: 200),
+                          child: Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 18,
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+
+      case _RowEntry(:final row):
+        final Widget sourceRow = _SourceRow(
+          row: row,
+          probe: _probes[row.url],
+          probing: _probing.contains(row.url),
+          isBest: entry.isBest,
+          autofocus: entry.autofocus,
+          downloadMode: _downloadMode,
+          onFocusChange: (focused) => _handleRowFocusChange(row, focused),
+          onPlay: () => _play(row),
+          onDownload: () => unawaited(_download(row)),
+        );
+        // The key rides the outermost widget so [findChildIndexCallback] can
+        // match it, which is what keeps this row's State attached to this
+        // source when the list reorders.
+        return Padding(
+          key: ValueKey(row.key),
+          padding: EdgeInsets.only(bottom: entry.gap),
+          // Always an [Opacity], never a conditional wrapper: inserting one
+          // when a row fades would replace the subtree below it and take the
+          // row's focus nodes with it.
+          child: Opacity(opacity: entry.faded ? 0.55 : 1, child: sourceRow),
+        );
+    }
   }
 }
 
@@ -1082,6 +1373,7 @@ class _DpadDialogButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final palette = _GlassPalette.of(context);
 
     return DpadFocusable(
       onSelect: onPressed,
@@ -1093,27 +1385,33 @@ class _DpadDialogButton extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: isFocused ? Colors.white : Colors.transparent,
+              color: isFocused ? palette.ink : Colors.transparent,
               width: 2,
             ),
           ),
-          child: isPrimary
-              ? FilledButton(
-                  onPressed: onPressed,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: isFocused ? cs.primary : null,
+          // FilledButton/TextButton each publish a focus node, which would
+          // make every dialog button two stops on the D-pad. They expose no
+          // canRequestFocus, so the subtree is excluded instead; taps still
+          // work and select arrives via DpadFocusable.onSelect above.
+          child: ExcludeFocus(
+            child: isPrimary
+                ? FilledButton(
+                    onPressed: onPressed,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: isFocused ? cs.primary : null,
+                    ),
+                    child: Text(label),
+                  )
+                : TextButton(
+                    onPressed: onPressed,
+                    style: TextButton.styleFrom(
+                      backgroundColor: isFocused
+                          ? cs.surfaceContainerHighest
+                          : Colors.transparent,
+                    ),
+                    child: Text(label),
                   ),
-                  child: Text(label),
-                )
-              : TextButton(
-                  onPressed: onPressed,
-                  style: TextButton.styleFrom(
-                    backgroundColor: isFocused
-                        ? cs.surfaceContainerHighest
-                        : Colors.transparent,
-                  ),
-                  child: Text(label),
-                ),
+          ),
         );
       },
     );
@@ -1127,7 +1425,10 @@ class _DpadSourceButton extends StatefulWidget {
   final VoidCallback? onPressed;
   final bool isPrimary;
   final FocusNode? focusNode;
-  final KeyEventResult Function(FocusNode, KeyEvent)? onKeyEvent;
+
+  /// Arrow keys the chip answers itself. Handled on the chip's own focus node
+  /// rather than a wrapping [Focus] so the chip stays a single focus stop.
+  final DpadDirectionCallback? onDirection;
 
   const _DpadSourceButton({
     required this.icon,
@@ -1136,7 +1437,7 @@ class _DpadSourceButton extends StatefulWidget {
     required this.onPressed,
     this.isPrimary = false,
     this.focusNode,
-    this.onKeyEvent,
+    this.onDirection,
   });
 
   @override
@@ -1149,53 +1450,50 @@ class _DpadSourceButtonState extends State<_DpadSourceButton> {
   @override
   Widget build(BuildContext context) {
     final enabled = widget.onPressed != null;
+    final palette = _GlassPalette.of(context);
 
     if (!enabled) {
-      return ExcludeFocus(
-        child: Tooltip(
-          message: widget.tooltip ?? '',
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.06),
-                width: 0.8,
+      return SourceActionSemantics(
+        enabled: false,
+        child: ExcludeFocus(
+          child: Tooltip(
+            message: widget.tooltip ?? '',
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: palette.tint(0.04),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: palette.tint(0.06), width: 0.8),
               ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  widget.icon,
-                  size: 14,
-                  color: Colors.white.withValues(alpha: 0.25),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  widget.label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white.withValues(alpha: 0.25),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(widget.icon, size: 14, color: palette.tint(0.25)),
+                  const SizedBox(width: 4),
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: palette.tint(0.25),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       );
     }
 
-    final dpadButton = DpadFocusable(
+    return DpadFocusable(
       focusNode: widget.focusNode,
       onSelect: widget.onPressed,
+      onDirection: widget.onDirection,
       child: const SizedBox.shrink(),
       builder: (context, state, _) {
         final isFocused = state.focused;
         final highlight = isFocused || _isHovered;
-        const hotstarAccent = Color(0xFF0A84FF);
 
         final Color bgColor;
         final Color borderColor;
@@ -1203,71 +1501,72 @@ class _DpadSourceButtonState extends State<_DpadSourceButton> {
 
         if (widget.isPrimary) {
           if (highlight) {
-            bgColor = Colors.white;
-            borderColor = Colors.white;
-            contentColor = hotstarAccent;
+            bgColor = palette.ink;
+            borderColor = palette.ink;
+            contentColor = palette.inkContent;
           } else {
-            bgColor = hotstarAccent;
-            borderColor = hotstarAccent;
+            bgColor = sourceSheetAccent;
+            borderColor = sourceSheetAccent;
             contentColor = Colors.white;
           }
         } else {
           if (highlight) {
-            bgColor = hotstarAccent.withValues(alpha: 0.20);
-            borderColor = hotstarAccent;
-            contentColor = Colors.white;
+            bgColor = sourceSheetAccent.withValues(alpha: 0.20);
+            borderColor = sourceSheetAccent;
+            contentColor = palette.ink;
           } else {
-            bgColor = Colors.white.withValues(alpha: 0.06);
-            borderColor = Colors.white.withValues(alpha: 0.12);
-            contentColor = Colors.white.withValues(alpha: 0.85);
+            bgColor = palette.tint(0.06);
+            borderColor = palette.tint(0.12);
+            contentColor = palette.tint(0.85);
           }
         }
 
-        return Tooltip(
-          message: widget.tooltip ?? widget.label,
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: widget.onPressed,
-              overlayColor: WidgetStateProperty.all(Colors.transparent),
-              hoverColor: Colors.transparent,
-              splashColor: Colors.transparent,
-              highlightColor: Colors.transparent,
-              onHover: (hovered) {
-                if (_isHovered != hovered) {
-                  setState(() => _isHovered = hovered);
-                }
-              },
-              borderRadius: BorderRadius.circular(6),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: borderColor,
-                    width: 1.0,
+        return SourceActionSemantics(
+          enabled: true,
+          child: Tooltip(
+            message: widget.tooltip ?? widget.label,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                // DpadFocusable already owns this chip's focus node.
+                canRequestFocus: false,
+                onTap: widget.onPressed,
+                overlayColor: WidgetStateProperty.all(Colors.transparent),
+                hoverColor: Colors.transparent,
+                splashColor: Colors.transparent,
+                highlightColor: Colors.transparent,
+                onHover: (hovered) {
+                  if (_isHovered != hovered) {
+                    setState(() => _isHovered = hovered);
+                  }
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 4,
                   ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      widget.icon,
-                      size: 14,
-                      color: contentColor,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: contentColor,
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: borderColor, width: 1.0),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(widget.icon, size: 14, color: contentColor),
+                      const SizedBox(width: 4),
+                      Text(
+                        widget.label,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: contentColor,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1275,11 +1574,6 @@ class _DpadSourceButtonState extends State<_DpadSourceButton> {
         );
       },
     );
-
-    if (widget.onKeyEvent != null) {
-      return Focus(onKeyEvent: widget.onKeyEvent, child: dpadButton);
-    }
-    return dpadButton;
   }
 }
 
@@ -1337,6 +1631,14 @@ class _SourceRow extends StatefulWidget {
   final bool probing;
   final bool isBest;
   final bool autofocus;
+
+  /// Activating the card body downloads instead of plays. Both chips are on
+  /// the card either way.
+  final bool downloadMode;
+
+  /// Fires for the card and for its action buttons alike, so the sheet knows
+  /// the user is standing here.
+  final ValueChanged<bool> onFocusChange;
   final VoidCallback onPlay;
   final VoidCallback onDownload;
 
@@ -1345,6 +1647,8 @@ class _SourceRow extends StatefulWidget {
     required this.probe,
     required this.probing,
     required this.isBest,
+    required this.downloadMode,
+    required this.onFocusChange,
     required this.onPlay,
     required this.onDownload,
     this.autofocus = false,
@@ -1386,153 +1690,171 @@ class _SourceRowState extends State<_SourceRow> {
     final isBest = widget.isBest;
     final onPlay = widget.onPlay;
     final onDownload = widget.onDownload;
+    final palette = _GlassPalette.of(context);
+    final activate = widget.downloadMode && row.canDownload
+        ? onDownload
+        : onPlay;
 
     final resolution = probe?.resolutionLabel ?? row.qualityLabel;
-    final size = probe?.sizeLabel ??
+    final size =
+        probe?.sizeLabel ??
         (row.nuvio.size != null && row.nuvio.size!.trim().isNotEmpty
             ? row.nuvio.size!.trim()
             : null);
 
-    return Focus(
-      onKeyEvent: (node, event) {
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.arrowRight) {
-          _playFocusNode.requestFocus();
-          return KeyEventResult.handled;
+    return DpadFocusable(
+      focusNode: _cardFocusNode,
+      autofocus: widget.autofocus,
+      onSelect: activate,
+      onFocusChange: widget.onFocusChange,
+      // Play sits inside the card's own rect, so no directional policy can
+      // ever pick it as the target to the right; this hop has to be explicit.
+      // LEFT/RIGHT between the chips resolves natively once the card holds
+      // focus and [SourceCardActions] lets them into traversal.
+      // The primary-focus guard stops it firing again for a RIGHT that
+      // bubbled up from Download, which has nowhere further to go - without
+      // it, RIGHT on Download bounces back to Play.
+      onDirection: (direction) {
+        if (direction != TraversalDirection.right ||
+            !_cardFocusNode.hasPrimaryFocus) {
+          return false;
         }
-        return KeyEventResult.ignored;
+        _playFocusNode.requestFocus();
+        return true;
       },
-      child: DpadFocusable(
-        focusNode: _cardFocusNode,
-        autofocus: widget.autofocus,
-        onSelect: onPlay,
-        child: const SizedBox.shrink(),
-        builder: (context, state, _) {
-          final isFocused = state.focused;
-          return Material(
-            color: isFocused
-                ? const Color(0xFF242430)
-                : Colors.transparent,
+      child: const SizedBox.shrink(),
+      builder: (context, state, _) {
+        final isFocused = state.focused;
+        return Material(
+          color: isFocused ? palette.cardFocusFill : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            // One focus node per card: DpadFocusable's. A focusable InkWell
+            // publishes a second node with the same rect, and traversal
+            // lands on that one, leaving the card with no focus ring.
+            canRequestFocus: false,
+            onTap: activate,
+            overlayColor: WidgetStateProperty.all(Colors.transparent),
+            hoverColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            onHover: (hovered) {
+              if (_isHovered != hovered) {
+                setState(() => _isHovered = hovered);
+              }
+            },
             borderRadius: BorderRadius.circular(10),
-            child: InkWell(
-              onTap: onPlay,
-              overlayColor: WidgetStateProperty.all(Colors.transparent),
-              hoverColor: Colors.transparent,
-              splashColor: Colors.transparent,
-              highlightColor: Colors.transparent,
-              onHover: (hovered) {
-                if (_isHovered != hovered) {
-                  setState(() => _isHovered = hovered);
-                }
-              },
-              borderRadius: BorderRadius.circular(10),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 9,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                // Focus is the one state a viewer ten feet away has to read at
+                // a glance, so it gets its own colour and weight rather than
+                // the accent the top pick already wears permanently.
+                border: Border.all(
+                  color: isFocused
+                      ? palette.ink
+                      : (_isHovered || isBest
+                            ? cs.primary
+                            : palette.tint(0.08)),
+                  width: isFocused ? 2 : 1.2,
                 ),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: isFocused || _isHovered || isBest
-                        ? cs.primary
-                        : Colors.white.withValues(alpha: 0.08),
-                    width: 1.2,
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Top row: Premium quality badge (left top) + tags, size, seeders, and probe badge
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: Wrap(
-                            spacing: 6,
-                            runSpacing: 4,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              _QualityBadge(resolution: resolution),
-                              if (row.isHdr)
-                                const SourceTag(
-                                  text: 'HDR',
-                                  color: Colors.deepPurpleAccent,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Top row: Premium quality badge (left top) + tags, size, seeders, and probe badge
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            _QualityBadge(resolution: resolution),
+                            if (row.isHdr)
+                              const SourceTag(
+                                text: 'HDR',
+                                color: Colors.deepPurpleAccent,
+                              ),
+                            if (row.isTorrent)
+                              const SourceTag(text: 'P2P', color: Colors.teal),
+                            if (size != null)
+                              Text(
+                                size,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: cs.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
                                 ),
-                              if (row.isTorrent)
-                                const SourceTag(text: 'P2P', color: Colors.teal),
-                              if (size != null)
-                                Text(
-                                  size,
-                                  style: TextStyle(
-                                    fontSize: 11,
+                              ),
+                            if (row.nuvio.seeders != null)
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.people_alt_outlined,
+                                    size: 12,
                                     color: cs.onSurfaceVariant,
-                                    fontWeight: FontWeight.w600,
                                   ),
-                                ),
-                              if (row.nuvio.seeders != null)
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.people_alt_outlined,
-                                      size: 12,
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    '${row.nuvio.seeders}',
+                                    style: TextStyle(
+                                      fontSize: 11,
                                       color: cs.onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
                                     ),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      '${row.nuvio.seeders}',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: cs.onSurfaceVariant,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                            ],
-                          ),
+                                  ),
+                                ],
+                              ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
-                        ProbeBadge(
-                          probe: probe,
-                          probing: probing,
-                          isPeerToPeer: row.isTorrent,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-
-                    // Source name (starts from left, uses all horizontal space)
-                    Text(
-                      row.providerName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                        color: Colors.white,
-                        letterSpacing: 0.2,
                       ),
-                    ),
-                    const SizedBox(height: 2),
-
-                    // Description (starts from left, uses horizontal space)
-                    Text(
-                      row.detail,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontSize: 11,
+                      const SizedBox(width: 8),
+                      ProbeBadge(
+                        probe: probe,
+                        probing: probing,
+                        isPeerToPeer: row.isTorrent,
                       ),
-                    ),
-                    const SizedBox(height: 8),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
 
-                    // Bottom row: Empty space on the left, Play and Download buttons on the bottom right corner
-                    Row(
+                  // Source name (starts from left, uses all horizontal space)
+                  Text(
+                    row.providerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      color: palette.ink,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+
+                  // Description (starts from left, uses horizontal space)
+                  Text(
+                    row.detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Bottom row: Empty space on the left, Play and Download buttons on the bottom right corner
+                  SourceCardActions(
+                    cardFocusNode: _cardFocusNode,
+                    child: Row(
                       children: [
                         const Spacer(),
                         _DpadSourceButton(
@@ -1542,21 +1864,19 @@ class _SourceRowState extends State<_SourceRow> {
                           isPrimary: true,
                           tooltip: 'Play',
                           onPressed: onPlay,
-                          onKeyEvent: (node, event) {
-                            if (event is KeyDownEvent) {
-                              if (event.logicalKey ==
-                                  LogicalKeyboardKey.arrowLeft) {
+                          onDirection: (direction) {
+                            switch (direction) {
+                              case TraversalDirection.left:
                                 _cardFocusNode.requestFocus();
-                                return KeyEventResult.handled;
-                              }
-                              if (event.logicalKey ==
-                                      LogicalKeyboardKey.arrowRight &&
-                                  row.canDownload) {
+                                return true;
+                              case TraversalDirection.right:
+                                if (!row.canDownload) return false;
                                 _downloadFocusNode.requestFocus();
-                                return KeyEventResult.handled;
-                              }
+                                return true;
+                              case TraversalDirection.up:
+                              case TraversalDirection.down:
+                                return false;
                             }
-                            return KeyEventResult.ignored;
                           },
                         ),
                         const SizedBox(width: 8),
@@ -1569,25 +1889,23 @@ class _SourceRowState extends State<_SourceRow> {
                               ? 'Download now'
                               : 'Stream-only link',
                           onPressed: row.canDownload ? onDownload : null,
-                          onKeyEvent: (node, event) {
-                            if (event is KeyDownEvent &&
-                                event.logicalKey ==
-                                    LogicalKeyboardKey.arrowLeft) {
-                              _playFocusNode.requestFocus();
-                              return KeyEventResult.handled;
+                          onDirection: (direction) {
+                            if (direction != TraversalDirection.left) {
+                              return false;
                             }
-                            return KeyEventResult.ignored;
+                            _playFocusNode.requestFocus();
+                            return true;
                           },
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }

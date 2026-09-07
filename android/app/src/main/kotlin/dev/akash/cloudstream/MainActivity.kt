@@ -31,8 +31,10 @@ class MainActivity : FlutterActivity() {
                     updatePipActions()
                     val builder = PictureInPictureParams.Builder()
                     builder.setActions(createPipActions())
-                    enterPictureInPictureMode(builder.build())
-                    result.success(null)
+                    // Returns false when the user has PiP switched off for
+                    // this app: no exception, and no onPictureInPictureModeChanged
+                    // either. Dart needs the answer to undo its own optimism.
+                    result.success(enterPictureInPictureMode(builder.build()))
                 } else {
                     result.error("UNSUPPORTED", "PIP not supported", null)
                 }
@@ -238,7 +240,12 @@ class MainActivity : FlutterActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        io.flutter.plugin.common.MethodChannel(flutterEngine!!.dartExecutor.binaryMessenger, CHANNEL)
-            .invokeMethod("pipModeChanged", isInPictureInPictureMode)
+        // Safe call, not !!. Closing the PiP window is one of the ways this
+        // activity is torn down, and the engine can already be detached by the
+        // time the leave-PiP callback lands — which crashed the app on exit.
+        // The receiver above uses the same guarded form for the same reason.
+        flutterEngine?.dartExecutor?.binaryMessenger?.let {
+            MethodChannel(it, CHANNEL).invokeMethod("pipModeChanged", isInPictureInPictureMode)
+        }
     }
 }

@@ -8,6 +8,30 @@ import '../../models/tmdb_details.dart';
 /// `MultimediaItem.source` marker for anything that came from an add-on.
 const String kAddonItemSource = 'addon';
 
+/// An add-on manifest is third-party JSON, so a field's type is a suggestion:
+/// ids come back as ints, episode numbers as strings, ratings as either. A
+/// [TypeError] while parsing one is swallowed by the catalog and meta fetch
+/// loops, which drops the whole add-on out of the list rather than the one bad
+/// field, so every foreign value is read through these instead of cast.
+String? _asString(Object? value) {
+  if (value is String) return value;
+  if (value is num) return '$value';
+  return null;
+}
+
+int? _asInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.isFinite ? value.toInt() : null;
+  if (value is String) {
+    final text = value.trim();
+    final whole = int.tryParse(text);
+    if (whole != null) return whole;
+    final fraction = double.tryParse(text);
+    return fraction != null && fraction.isFinite ? fraction.toInt() : null;
+  }
+  return null;
+}
+
 class AddonMetaPreview {
   final String id;
   final String type;
@@ -47,21 +71,22 @@ class AddonMetaPreview {
       final raw = json[key];
       if (raw is List) {
         for (final entry in raw) {
-          if (entry is String && entry.trim().isNotEmpty) genres.add(entry);
+          final genre = _asString(entry)?.trim() ?? '';
+          if (genre.isNotEmpty) genres.add(genre);
         }
       }
     }
 
     return AddonMetaPreview(
-      id: (json['id'] as String?) ?? '',
-      type: (json['type'] as String?) ?? 'movie',
-      name: (json['name'] as String?) ?? '',
-      poster: json['poster'] as String?,
-      background: json['background'] as String?,
-      logo: json['logo'] as String?,
-      description: json['description'] as String?,
-      releaseInfo: json['releaseInfo']?.toString(),
-      imdbRating: json['imdbRating']?.toString(),
+      id: _asString(json['id']) ?? '',
+      type: _asString(json['type']) ?? 'movie',
+      name: _asString(json['name']) ?? '',
+      poster: _asString(json['poster']),
+      background: _asString(json['background']),
+      logo: _asString(json['logo']),
+      description: _asString(json['description']),
+      releaseInfo: _asString(json['releaseInfo']),
+      imdbRating: _asString(json['imdbRating']),
       genres: genres,
       addonId: addonId,
       addonName: addonName,
@@ -122,21 +147,18 @@ class AddonVideo {
   });
 
   factory AddonVideo.fromJson(Map<String, dynamic> json) {
-    final number =
-        (json['episode'] as num?)?.toInt() ?? (json['number'] as num?)?.toInt();
+    final number = _asInt(json['episode']) ?? _asInt(json['number']);
     return AddonVideo(
-      id: (json['id'] as String?) ?? '',
+      id: _asString(json['id']) ?? '',
       title:
-          (json['title'] as String?) ??
-          (json['name'] as String?) ??
+          _asString(json['title']) ??
+          _asString(json['name']) ??
           (number != null ? 'Episode $number' : 'Video'),
-      season: (json['season'] as num?)?.toInt(),
+      season: _asInt(json['season']),
       episode: number,
-      released:
-          (json['released'] as String?) ?? (json['firstAired'] as String?),
-      thumbnail: json['thumbnail'] as String?,
-      overview:
-          (json['overview'] as String?) ?? (json['description'] as String?),
+      released: _asString(json['released']) ?? _asString(json['firstAired']),
+      thumbnail: _asString(json['thumbnail']),
+      overview: _asString(json['overview']) ?? _asString(json['description']),
     );
   }
 
@@ -242,11 +264,11 @@ class AddonMeta extends AddonMetaPreview {
         if (entry is String) {
           addCastMember(entry);
         } else if (entry is Map) {
-          final name = (entry['name'] as String?) ?? '';
-          final character = (entry['character'] as String?) ?? '';
-          final photo = (entry['profile_path'] ??
-              entry['photo'] ??
-              entry['avatar']) as String?;
+          final name = _asString(entry['name']) ?? '';
+          final character = _asString(entry['character']) ?? '';
+          final photo = _asString(
+            entry['profile_path'] ?? entry['photo'] ?? entry['avatar'],
+          );
           addCastMember(name, character: character, profilePath: photo);
         }
       }
@@ -256,8 +278,8 @@ class AddonMeta extends AddonMetaPreview {
     if (rawLinks is List) {
       for (final link in rawLinks) {
         if (link is Map) {
-          final cat = (link['category'] as String?)?.toLowerCase();
-          final name = (link['name'] as String?) ?? '';
+          final cat = _asString(link['category'])?.toLowerCase();
+          final name = _asString(link['name']) ?? '';
           if (cat == 'cast') {
             addCastMember(name);
           }
@@ -292,9 +314,9 @@ class AddonMeta extends AddonMetaPreview {
       for (final entry in rawTrailers) {
         if (entry is Map) {
           addTrailer(
-            entry['source'] as String?,
-            type: entry['type'] as String?,
-            name: (entry['name'] ?? entry['title']) as String?,
+            _asString(entry['source']),
+            type: _asString(entry['type']),
+            name: _asString(entry['name'] ?? entry['title']),
           );
         } else if (entry is String) {
           addTrailer(entry);
@@ -307,17 +329,15 @@ class AddonMeta extends AddonMetaPreview {
       for (final entry in rawStreams) {
         if (entry is Map) {
           addTrailer(
-            (entry['ytId'] ?? entry['source']) as String?,
+            _asString(entry['ytId'] ?? entry['source']),
             type: 'Trailer',
-            name: entry['title'] as String?,
+            name: _asString(entry['title']),
           );
         }
       }
     }
 
-    if (json['trailer'] is String) {
-      addTrailer(json['trailer'] as String);
-    }
+    addTrailer(_asString(json['trailer']));
 
     // Production companies parsing
     final productionCompanies = <TmdbProductionCompany>[];
@@ -345,8 +365,8 @@ class AddonMeta extends AddonMetaPreview {
             addCompany(entry);
           } else if (entry is Map) {
             addCompany(
-              entry['name'] as String?,
-              logoPath: (entry['logo_path'] ?? entry['logo']) as String?,
+              _asString(entry['name']),
+              logoPath: _asString(entry['logo_path'] ?? entry['logo']),
             );
           }
         }
@@ -361,11 +381,10 @@ class AddonMeta extends AddonMetaPreview {
     final directors = <String>[];
     final rawDirector = json['director'] ?? json['directors'];
     if (rawDirector is List) {
-      for (final d in rawDirector) {
-        if (d is String &&
-            d.trim().isNotEmpty &&
-            !directors.contains(d.trim())) {
-          directors.add(d.trim());
+      for (final entry in rawDirector) {
+        final clean = _asString(entry)?.trim() ?? '';
+        if (clean.isNotEmpty && !directors.contains(clean)) {
+          directors.add(clean);
         }
       }
     } else if (rawDirector is String && rawDirector.trim().isNotEmpty) {
@@ -379,9 +398,10 @@ class AddonMeta extends AddonMetaPreview {
     final writers = <String>[];
     final rawWriter = json['writer'] ?? json['writers'];
     if (rawWriter is List) {
-      for (final w in rawWriter) {
-        if (w is String && w.trim().isNotEmpty && !writers.contains(w.trim())) {
-          writers.add(w.trim());
+      for (final entry in rawWriter) {
+        final clean = _asString(entry)?.trim() ?? '';
+        if (clean.isNotEmpty && !writers.contains(clean)) {
+          writers.add(clean);
         }
       }
     } else if (rawWriter is String && rawWriter.trim().isNotEmpty) {
@@ -396,8 +416,8 @@ class AddonMeta extends AddonMetaPreview {
     if (directorLinks is List) {
       for (final link in directorLinks) {
         if (link is Map) {
-          final cat = (link['category'] as String?)?.toLowerCase();
-          final name = (link['name'] as String?) ?? '';
+          final cat = _asString(link['category'])?.toLowerCase();
+          final name = _asString(link['name']) ?? '';
           if (name.isNotEmpty) {
             if ((cat == 'directors' || cat == 'director') &&
                 !directors.contains(name)) {
@@ -411,10 +431,9 @@ class AddonMeta extends AddonMetaPreview {
       }
     }
 
-    final country = json['country']?.toString();
-    final awards = json['awards']?.toString();
-    int? moviedbId = (json['moviedb_id'] as num?)?.toInt() ??
-        (json['tmdb_id'] as num?)?.toInt();
+    final country = _asString(json['country']);
+    final awards = _asString(json['awards']);
+    int? moviedbId = _asInt(json['moviedb_id']) ?? _asInt(json['tmdb_id']);
     if (moviedbId == null && preview.id.startsWith('tmdb:')) {
       moviedbId = int.tryParse(preview.id.split(':').last);
     }
@@ -439,7 +458,7 @@ class AddonMeta extends AddonMetaPreview {
       productionCompanies: productionCompanies,
       directors: directors,
       writers: writers,
-      runtime: json['runtime']?.toString(),
+      runtime: _asString(json['runtime']),
       country: country,
       awards: awards,
       moviedbId: moviedbId,

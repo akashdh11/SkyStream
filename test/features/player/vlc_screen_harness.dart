@@ -1,0 +1,434 @@
+/// Pumps the real [VlcPlayerScreen] over a mocked engine.
+///
+/// Shared by every test about what the *screen* does - the opening overlay,
+/// Back, the status line - as opposed to what the controls or the domain do.
+/// The screen is a hub, so standing it up means answering for the engine
+/// channel, connectivity, the wakelock and storage at once; that plumbing
+/// lives here so each test file can say what it is about instead.
+///
+/// Hygiene every screen test has to respect:
+///  * A playing controller keeps a 1 s stall watchdog armed, and flutter_test
+///    checks for pending timers *before* `addTearDown` runs. A test that ends
+///    in healthy playback must emit a paused snapshot
+///    (`sendEvent(tester, snapshot(state: 'paused'))`) or unmount the screen
+///    in-body with `tester.pumpWidget(const SizedBox())`.
+///  * Back on a remote is `tester.sendKeyEvent(LogicalKeyboardKey.goBack,
+///    platform: 'android', physicalKey: PhysicalKeyboardKey.escape)`:
+///    flutter_test has no physical key on file for Go Back and no Windows key
+///    code for it; Android's table has both, and the controls only ever read
+///    the logical key.
+///  * `settle()`, never `pumpAndSettle`, once the screen has reached the
+///    playing stage: the overlay's spinner is deliberately endless.
+library;
+
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart' show Override;
+import 'package:skystream/core/domain/entity/multimedia_item.dart';
+import 'package:skystream/core/extensions/extension_manager.dart';
+import 'package:skystream/core/services/download_service.dart';
+import 'package:skystream/core/storage/episode_watch_repository.dart';
+import 'package:skystream/core/storage/history_repository.dart';
+import 'package:skystream/core/storage/settings_repository.dart';
+import 'package:skystream/core/storage/storage_service.dart';
+import 'package:skystream/core/providers/device_info_provider.dart';
+import 'package:skystream/features/library/presentation/history_provider.dart';
+import 'package:skystream/features/player/presentation/vlc/vlc_player_screen.dart';
+import 'package:skystream/features/settings/presentation/player_settings_provider.dart';
+import 'package:skystream/features/tracking/data/sync_manager.dart';
+import 'package:skystream/features/tracking/data/tracking_service.dart';
+import 'package:skystream/l10n/generated/app_localizations.dart';
+
+import 'fake_vlc_engine.dart';
+
+const MethodChannel vlcChannel = MethodChannel('vlc_player');
+const MethodChannel pipChannel = MethodChannel(
+  'dev.akash.skystream.player/pip',
+);
+
+/// The texture path is taken on Windows and Linux, and it is the one that
+/// names its own view: `create` answers with the id, so the test knows which
+/// event channel to speak on. The platform-view path takes its id from
+/// Flutter's global registry, which counts across the whole process - and the
+/// screen has nowhere to publish it, so no test could speak to that engine.
+/// Hence the variant: this is about the screen, not about the backend.
+final TargetPlatformVariant texturePlatform = TargetPlatformVariant.only(
+  TargetPlatform.windows,
+);
+const int viewId = 1;
+const EventChannel engineEvents = EventChannel('vlc_player/events/$viewId');
+
+/// The quality filter asks whether the device is on Wi-Fi, and the screen
+/// watches for the network coming back. Both go through connectivity_plus,
+/// which never answers in a test unless it is told to.
+const MethodChannel connectivityChannel = MethodChannel(
+  'dev.fluttercommunity.plus/connectivity',
+);
+const EventChannel connectivityStatus = EventChannel(
+  'dev.fluttercommunity.plus/connectivity_status',
+);
+
+/// Answered because the wakelock is taken from unawaited futures - see
+/// pip_engine_continuity_test for the same guard.
+const String wakelockToggle =
+    'dev.flutter.pigeon.wakelock_plus_platform_interface.WakelockPlusApi.toggle';
+final ByteData? wakelockReply = const StandardMessageCodec().encodeMessage(
+  <Object?>[null],
+);
+
+/// A 1080p television at the density Android TV actually reports.
+///
+/// A Shield, a Google TV or a Fire TV all present a 1920x1080 panel at
+/// devicePixelRatio 2, i.e. **960x540 logical dp** - half the budget a naive
+/// 1920x1080-at-dpr-1 harness hands a layout. Every ten-foot geometry defect
+/// worth catching (a drawer wider than the title-safe area, a tab strip that
+/// ellipsizes, a control that overflows the bar) only reproduces inside the
+/// real budget, so the shared harness has to spend the real one.
+const Size googleTvSize = Size(960, 540);
+
+/// The size every screen test runs at. This is [googleTvSize]: the harness
+/// sets `devicePixelRatio = 1`, so the number here is logical dp directly.
+const Size tvSize = googleTvSize;
+
+/// Resume lookup and progress writing both end in Hive. A test about what is
+/// on screen has no business standing a storage stack up, so the repository
+/// answers empty and swallows the writes.
+class NoHistory extends HistoryRepository {
+  NoHistory() : super(StorageService());
+
+  @override
+  List<HistoryItem> getWatchHistory() => const <HistoryItem>[];
+
+  @override
+  int getPosition(String url) => 0;
+
+  @override
+  int getDuration(String url) => 0;
+
+  @override
+  int getEpisodePosition(
+    String url, {
+    String? mainUrl,
+    int? season,
+    int? episode,
+  }) => 0;
+
+  @override
+  int getEpisodeDuration(
+    String url, {
+    String? mainUrl,
+    int? season,
+    int? episode,
+  }) => 0;
+
+  @override
+  Future<void> saveProgress(
+    MultimediaItem item,
+    int position,
+    int duration, {
+    String? lastStreamUrl,
+    String? lastEpisodeUrl,
+    int? season,
+    int? episode,
+    String? episodeTitle,
+    String? episodePosterUrl,
+  }) async {}
+}
+
+/// Advancing an episode and recording a livestream both write Continue
+/// Watching through the notifier rather than the repository, and the real one
+/// reads the settings store first.
+class MuteWatchHistory extends WatchHistory {
+  @override
+  List<HistoryItem> build() => const <HistoryItem>[];
+
+  @override
+  Future<void> saveProgress(
+    MultimediaItem item,
+    int position,
+    int duration, {
+    String? lastStreamUrl,
+    String? lastEpisodeUrl,
+    int? season,
+    int? episode,
+    String? episodeTitle,
+    String? episodePosterUrl,
+  }) async {}
+
+  /// The other half of the same write path: a title that finishes with nothing
+  /// after it is cleared out of Continue Watching from here, which is what
+  /// end of media does the moment there is no next episode.
+  @override
+  Future<void> removeFromHistory(String url) async {}
+}
+
+/// Marking an episode watched is [PlaybackTracker]'s terminal act on a series,
+/// so every test that plays an episode all the way to its duration reaches it.
+/// The real provider is built from `storageServiceProvider`, which throws.
+class QuietEpisodeWatch extends EpisodeWatchRepository {
+  QuietEpisodeWatch() : super(StorageService(), NoHistory(), _nothingChanged);
+
+  static void _nothingChanged() {}
+
+  @override
+  Future<void> setWatched(
+    String mainUrl,
+    Episode episode,
+    bool watched,
+  ) async {}
+
+  /// Null is "no explicit override", which sends `isWatched` on to the history
+  /// repository - already answered by [NoHistory]. Overridden because the real
+  /// one reads the raw store.
+  @override
+  bool? getExplicitState(String mainUrl, Episode episode) => null;
+}
+
+/// Both skip-segment lookups are opt-in and read their switch from storage
+/// before doing anything, and an episode always asks. Off, without asking.
+class QuietSettings extends SettingsRepository {
+  QuietSettings() : super(StorageService());
+
+  @override
+  bool isIntroDbIntegrationEnabled() => false;
+
+  @override
+  bool isAnimeSkipIntegrationEnabled() => false;
+}
+
+/// A download lookup that waits to be let go.
+///
+/// The next-episode path looks on disk before it resolves anything, and that
+/// lookup is the first await on the way. Holding it open is how a test gets to
+/// see the screen mid-advance rather than after the whole chain has run.
+class GatedDownloads extends DownloadService {
+  GatedDownloads(super.ref);
+
+  final Completer<void> gate = Completer<void>();
+
+  @override
+  Future<File?> getDownloadedFile(
+    MultimediaItem item, {
+    Episode? episode,
+  }) async {
+    await gate.future;
+    return null;
+  }
+}
+
+/// Answers for everything the screen talks to.
+///
+/// With no [engine], the player channel answers `create` and nothing else, and
+/// the event stream is silent until a test speaks on it with [sendEvent]. With
+/// one, the channel and the stream are the fake's, so track calls are answered
+/// from its state and `engine.emit` stamps that state into every snapshot;
+/// [sendEvent] still reaches it as long as the fake keeps the default [viewId].
+/// Usable as a tear-off in `setUp` either way.
+void installEngineMocks({FakeVlcEngine? engine}) {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  if (engine != null) {
+    engine.install();
+  } else {
+    messenger.setMockMethodCallHandler(vlcChannel, (call) async {
+      if (call.method == 'create') {
+        return <String, Object?>{'viewId': viewId, 'textureId': viewId};
+      }
+      return null;
+    });
+    messenger.setMockStreamHandler(
+      engineEvents,
+      MockStreamHandler.inline(onListen: (arguments, sink) {}),
+    );
+  }
+  messenger.setMockMessageHandler(
+    wakelockToggle,
+    (message) async => wakelockReply,
+  );
+  messenger.setMockMethodCallHandler(
+    connectivityChannel,
+    (call) async => <String>['wifi'],
+  );
+  messenger.setMockStreamHandler(
+    connectivityStatus,
+    MockStreamHandler.inline(onListen: (arguments, sink) {}),
+  );
+}
+
+void removeEngineMocks() {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(vlcChannel, null);
+  messenger.setMockStreamHandler(engineEvents, null);
+  messenger.setMockMessageHandler(wakelockToggle, null);
+  messenger.setMockMethodCallHandler(pipChannel, null);
+  messenger.setMockMethodCallHandler(connectivityChannel, null);
+  messenger.setMockStreamHandler(connectivityStatus, null);
+}
+
+/// The overlay's spinner never stops, so `pumpAndSettle` cannot be used past
+/// the point where the screen reaches the playing stage. Pumping a fixed run
+/// of frames drives the same async gaps without waiting for an animation that
+/// is deliberately endless.
+Future<void> settle(WidgetTester tester) async {
+  for (var i = 0; i < 12; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+/// One native snapshot, shaped the way the engine sends it.
+Map<String, Object?> snapshot({
+  String state = 'playing',
+  int position = 1500,
+  int duration = 0,
+}) => <String, Object?>{
+  'state': state,
+  'position': position,
+  'duration': duration,
+  'volume': 100,
+  'playbackSpeed': 1.0,
+  'isReady': true,
+  'isSeekable': true,
+  'isLive': false,
+};
+
+/// Delivers [event] and nothing more, for tests that need to look at the very
+/// next frame.
+Future<void> sendSnapshot(
+  WidgetTester tester,
+  Map<String, Object?> event,
+) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    engineEvents.name,
+    engineEvents.codec.encodeSuccessEnvelope(event),
+    null,
+  );
+}
+
+/// One engine event, as the native side would deliver it, pumped past the
+/// controller's 250ms event throttle.
+Future<void> sendEvent(WidgetTester tester, Map<String, Object?> event) async {
+  await sendSnapshot(tester, event);
+  await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// The engine reports a position that has moved, which is the only thing the
+/// screen accepts as proof that a frame exists.
+Future<void> sendFirstFrame(WidgetTester tester) =>
+    sendEvent(tester, snapshot());
+
+/// Back as the system delivers it - the remote's key on a television, the
+/// gesture on a phone - which the framework turns into a `popRoute` on the
+/// navigation channel and PopScope catches.
+Future<void> sendBack(WidgetTester tester) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    SystemChannels.navigation.name,
+    SystemChannels.navigation.codec.encodeMethodCall(
+      const MethodCall('popRoute'),
+    ),
+    (_) {},
+  );
+  await tester.pump();
+}
+
+/// Stands the screen up and drives it to the point where `setMedia` has been
+/// called and the engine owes a frame.
+///
+/// [pushed] puts a page under the player so a pop has somewhere to go and a
+/// test can see that it went; the default hosts it as `home`, where Back
+/// would leave the app instead.
+///
+/// The sync manager is stood up with no tracking services unless [overrides]
+/// brings its own: the moment a snapshot with a real length lands, the
+/// screen's PlaybackTracker scrobbles through `syncManagerProvider`, and the
+/// real one watches four services none of this plumbing answers for - the
+/// scrobble would throw straight out of the controller's notifyListeners.
+Future<void> pumpPlayer(
+  WidgetTester tester, {
+  List<StreamResult>? preloadedStreams,
+  MultimediaItem? item,
+  Episode? episode,
+  String? videoUrl,
+  bool isTv = true,
+  bool pushed = false,
+  List<Override> overrides = const <Override>[],
+}) async {
+  tester.view.physicalSize = tvSize;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+
+  final media =
+      item ??
+      MultimediaItem(
+        title: 'Channel One',
+        url: 'https://example.com/movie.mp4',
+        posterUrl: '',
+        // Direct only when there is nothing preloaded to prefer.
+        provider: preloadedStreams == null ? 'Remote' : null,
+      );
+  final screen = VlcPlayerScreen(
+    item: media,
+    videoUrl: videoUrl ?? 'https://example.com/movie.mp4',
+    episode: episode,
+    preloadedStreams: preloadedStreams,
+  );
+  final navigator = GlobalKey<NavigatorState>();
+  // Riverpod rejects the same provider overridden twice in one scope, so
+  // every default below stands down when the caller brought its own. The sync
+  // manager was the first to need it; the skip settings are the second (both
+  // segment lookups read their switch from `settingsRepositoryProvider` before
+  // doing anything, so a test that wants real intro/outro bands has no other
+  // way in), and the two stores behind the panel's watched marks are the
+  // third.
+  bool brought(Object provider) =>
+      overrides.any((override) => override.origin == provider);
+
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        deviceProfileProvider.overrideWithValue(
+          AsyncValue.data(DeviceProfile(isTv: isTv)),
+        ),
+        playerSettingsProvider.overrideWithBuild(
+          (_, _) => const PlayerSettings(),
+        ),
+        // Nothing here goes near a plugin: either the item is direct or the
+        // candidates are handed in already resolved.
+        activeProviderProvider.overrideWithValue(null),
+        if (!brought(historyRepositoryProvider))
+          historyRepositoryProvider.overrideWithValue(NoHistory()),
+        watchHistoryProvider.overrideWith(MuteWatchHistory.new),
+        if (!brought(episodeWatchRepositoryProvider))
+          episodeWatchRepositoryProvider.overrideWithValue(QuietEpisodeWatch()),
+        if (!brought(settingsRepositoryProvider))
+          settingsRepositoryProvider.overrideWithValue(QuietSettings()),
+        if (!brought(syncManagerProvider))
+          syncManagerProvider.overrideWithValue(
+            SyncManager(const <TrackingService>[]),
+          ),
+        ...overrides,
+      ],
+      child: MaterialApp(
+        navigatorKey: navigator,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: pushed ? const Scaffold(body: SizedBox.expand()) : screen,
+      ),
+    ),
+  );
+  if (pushed) {
+    unawaited(
+      navigator.currentState!.push(
+        MaterialPageRoute<void>(builder: (_) => screen),
+      ),
+    );
+  }
+  // Resolution, the resume lookup, setMedia and the texture attach are all
+  // async gaps; so is the push transition.
+  await settle(tester);
+}

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../../../shared/widgets/custom_widgets.dart';
 import 'hotstar_player_style.dart';
+import 'player_activation.dart';
 
 /// Top zone: back button + title/subtitle. Paints its own top scrim so the
 /// chrome no longer needs a separate fixed-height Positioned gradient.
@@ -98,14 +99,13 @@ class PlayerTopBar extends StatelessWidget {
 /// reveal overflow when there are more buttons than fit (otherwise the extras
 /// were simply clipped and unreachable).
 ///
-/// On TV, Left/Right are driven explicitly by reading-order focus traversal
-/// ([FocusNode.nextFocus]/[previousFocus]) within the row's own
-/// [FocusTraversalGroup]; the handler consumes the arrows *before* the inner
-/// [Scrollable] sees them, so focus moves cleanly across the whole row (and the
-/// scroll view follows focus via the framework's ensureVisible) with no scroll
-/// trap. Up/Down still bubble out to move between the scrubber / controls /
-/// top-bar rows. (Off TV the handler is null, so desktop keyboard arrows keep
-/// their seek/volume behaviour and touch just scrolls.) Paints its own scrim.
+/// Left/Right/Up/Down are left to [DirectionalFocusAction]: the buttons are
+/// siblings in one [Row] inside one [FocusTraversalGroup], so geometric
+/// traversal already walks the row and stops at its ends. An earlier version
+/// drove Left/Right by hand with [FocusNode.nextFocus]/[previousFocus]; those
+/// operate on the enclosing *scope* (the route), not the group, and wrap to
+/// the route's first/last node — so Right from the last button landed somewhere
+/// else on screen. Paints its own scrim.
 class PlayerBottomBar extends StatelessWidget {
   final Widget progressBar;
   final List<Widget> leading;
@@ -127,22 +127,6 @@ class PlayerBottomBar extends StatelessWidget {
     this.isTouch = false,
   });
 
-  KeyEventResult _handleRowKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final primary = FocusManager.instance.primaryFocus;
-    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      primary?.nextFocus();
-      return KeyEventResult.handled;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      primary?.previousFocus();
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
   @override
   Widget build(BuildContext context) {
     final padding = MediaQuery.viewPaddingOf(context);
@@ -155,21 +139,25 @@ class PlayerBottomBar extends StatelessWidget {
     final double rightPadding = isTv
         ? edge
         : (padding.right > edge ? padding.right : edge);
-    return SafeArea(
-      left: false,
-      right: false,
-      top: false,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(leftPadding, 2, rightPadding, 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            progressBar,
-            FocusTraversalGroup(
-              child: Focus(
-                canRequestFocus: false,
-                skipTraversal: true,
-                onKeyEvent: isTv ? _handleRowKey : null,
+    // The same shape as the top bar's scrim: a gradient is paint, not a
+    // compositing layer, so it costs nothing over the platform view and stays
+    // inside the bar's own fade. Without it every reveal on a bright scene
+    // puts white glyphs on white.
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: HotstarPlayerStyle.bottomGradient,
+      ),
+      child: SafeArea(
+        left: false,
+        right: false,
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(leftPadding, 2, rightPadding, 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              progressBar,
+              FocusTraversalGroup(
                 child: Row(
                   children: [
                     // Left group: play/pause, lock, next — always visible.
@@ -195,8 +183,8 @@ class PlayerBottomBar extends StatelessWidget {
                   ],
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -213,6 +201,9 @@ class PlayerIconButton extends StatefulWidget {
   final bool highlight;
   final FocusNode? focusNode;
 
+  /// {@macro flutter.widgets.Focus.autofocus}
+  final bool autofocus;
+
   /// Optional icon-size override (the tap target grows to match). Used by the
   /// top-bar back button so it reads at the same weight as the title.
   final double? iconSize;
@@ -225,6 +216,7 @@ class PlayerIconButton extends StatefulWidget {
     this.isTv = false,
     this.highlight = false,
     this.focusNode,
+    this.autofocus = false,
     this.iconSize,
   });
 
@@ -258,6 +250,7 @@ class _PlayerIconButtonState extends State<PlayerIconButton> {
           onPressed: widget.onPressed,
           showFocusHighlight: widget.isTv,
           focusNode: widget.focusNode,
+          autofocus: widget.autofocus,
           shape: const CircleBorder(),
           child: SizedBox(
             width: box,
@@ -270,10 +263,102 @@ class _PlayerIconButtonState extends State<PlayerIconButton> {
   }
 }
 
-/// Labelled icon button for the controls row (Sources, Subtitles, Speed, …).
-/// Activates on tap and on D-pad/keyboard select/enter/space when focused;
-/// directional navigation between buttons is handled natively by the
-/// enclosing traversal group — this widget never moves focus itself.
+/// The big centred play/pause a phone or tablet expects over the video.
+///
+/// Sits beside [PlayerIconButton] so the two stay one design: same white
+/// glyph, same rounded Material icons, and the disc is the only thing the
+/// bottom-bar copy does not have. It is a second control, not a replacement -
+/// the bar keeps its own play/pause, because the chrome's focus machinery
+/// names that node and both Netflix and Prime ship two on a tablet.
+///
+/// Deliberately **not** a [CustomButton] and deliberately **not** a [Focus]:
+/// it holds no [FocusNode], so it is not a traversal candidate and can never
+/// compete for the autofocus the bottom bar's play/pause owns on television.
+/// It is built on touch only, so on a remote it does not exist at all.
+///
+/// [HitTestBehavior.translucent] is load-bearing rather than a default. The
+/// player's screen-wide gesture detector is the *first* child of the same
+/// Stack and this glyph is a later one, so hit testing reaches the glyph
+/// first. Opaque would stop [RenderStack.defaultHitTestChildren] dead and the
+/// screen-wide detector would never enter the gesture arena - which kills
+/// swipe-to-seek and swipe-for-volume started from the dead centre of the
+/// frame. Translucent puts both in the arena: a tap goes to the deeper member
+/// and a drag to the parent as soon as the pointer moves.
+///
+/// Translucent alone is not enough, and this is the part that is easy to get
+/// wrong. `RenderProxyBoxWithHitTestBehavior.hitTest` returns `hitTarget`,
+/// which is true whenever a *child* was hit - and `RenderParagraph.hitTestSelf`
+/// returns true unconditionally, so the [Icon] in the middle of the disc makes
+/// the detector answer "hit" and the Stack stops walking exactly as if it were
+/// opaque. Measured: a `dragFrom(centre)` stopped seeking. So the disc is
+/// wrapped in an [IgnorePointer] - it is paint, and the gesture belongs to the
+/// square around it. The detector then reports no hit, adds itself to the
+/// result anyway (that is what translucent means) and the walk carries on down
+/// to the screen-wide detector.
+///
+/// The label is passed in rather than looked up here: this file is not a
+/// localization boundary, and `lib/features/player/**` has a zero budget for
+/// hardcoded user-visible strings.
+class PlayerCenterPlayButton extends StatelessWidget {
+  /// Whether playback is running - a rebuffer counts as running, exactly as it
+  /// does for the bottom bar, since the film resumes without a press.
+  final bool playing;
+
+  /// The localized "Play"/"Pause" the semantics layer announces.
+  final String label;
+
+  final VoidCallback onPressed;
+
+  const PlayerCenterPlayButton({
+    super.key,
+    required this.playing,
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // A phone gets the smaller disc; anything with a 600 dp short side is a
+    // tablet held further away and takes the larger one.
+    final double diameter = MediaQuery.sizeOf(context).shortestSide < 600
+        ? 72
+        : 88;
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: onPressed,
+        child: IgnorePointer(
+          child: SizedBox.square(
+            dimension: diameter,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                // A paint, not a layer: no opacity or filter here, so nothing
+                // new is composited over the platform view.
+                color: Colors.black.withValues(alpha: 0.34),
+              ),
+              // 0.52 is the Netflix/Prime proportion - a glyph inside a disc.
+              // Filling the disc reads as a bare icon with a smudge behind it.
+              child: Icon(
+                playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                color: Colors.white,
+                size: diameter * 0.52,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Labelled icon button for the controls row (Sources, Subtitles, Speed, …)
+/// and for the Skip Intro/Outro chip. Activates on tap and, when focused, on
+/// every key [isPlayerActivation] names — select, enter, space and a game
+/// controller's A; directional navigation between buttons is handled natively
+/// by the enclosing traversal group — this widget never moves focus itself.
 class PlayerActionButton extends StatefulWidget {
   final IconData icon;
   final String label;
@@ -281,6 +366,9 @@ class PlayerActionButton extends StatefulWidget {
   final bool highlight;
   final bool isTv;
   final FocusNode? focusNode;
+
+  /// {@macro flutter.widgets.Focus.autofocus}
+  final bool autofocus;
 
   const PlayerActionButton({
     super.key,
@@ -290,6 +378,7 @@ class PlayerActionButton extends StatefulWidget {
     this.highlight = false,
     this.isTv = false,
     this.focusNode,
+    this.autofocus = false,
   });
 
   @override
@@ -320,13 +409,11 @@ class _PlayerActionButtonState extends State<PlayerActionButton> {
       label: widget.label,
       child: Focus(
         focusNode: widget.focusNode,
+        autofocus: widget.autofocus,
         onFocusChange: (value) => setState(() => _focused = value),
         onKeyEvent: (node, event) {
           if (event is! KeyDownEvent) return KeyEventResult.ignored;
-          final key = event.logicalKey;
-          if (key == LogicalKeyboardKey.select ||
-              key == LogicalKeyboardKey.enter ||
-              key == LogicalKeyboardKey.space) {
+          if (isPlayerActivation(event.logicalKey)) {
             widget.onTap();
             return KeyEventResult.handled;
           }

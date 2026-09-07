@@ -10,6 +10,7 @@ import 'package:skystream/l10n/generated/app_localizations.dart';
 import 'player_settings_provider.dart';
 import 'widgets/settings_dialogs.dart';
 import 'widgets/settings_widgets.dart';
+import 'widgets/subtitle_appearance_settings.dart';
 
 /// Sub-screen for configuring all video playback, gestures, display, and quality preferences.
 class PlayerSettingsScreen extends ConsumerWidget {
@@ -104,7 +105,9 @@ class PlayerSettingsScreen extends ConsumerWidget {
                       ),
                       onTap: () => ref
                           .read(playerSettingsProvider.notifier)
-                          .setDoubleTapEnabled(!playerSettings.doubleTapEnabled),
+                          .setDoubleTapEnabled(
+                            !playerSettings.doubleTapEnabled,
+                          ),
                     ),
                     SettingsTile(
                       icon: Icons.swipe_rounded,
@@ -120,7 +123,9 @@ class PlayerSettingsScreen extends ConsumerWidget {
                       ),
                       onTap: () => ref
                           .read(playerSettingsProvider.notifier)
-                          .setSwipeSeekEnabled(!playerSettings.swipeSeekEnabled),
+                          .setSwipeSeekEnabled(
+                            !playerSettings.swipeSeekEnabled,
+                          ),
                     ),
                   ],
                   SettingsTile(
@@ -245,6 +250,7 @@ class PlayerSettingsScreen extends ConsumerWidget {
                   ),
                 ],
               ),
+              SubtitleAppearanceGroup(settings: playerSettings),
             ],
           ),
         ),

@@ -78,8 +78,7 @@ void main() {
     ]) {
       await runAsPlatform(platform, () async {
         recordPluginCalls();
-        final platformViews = _PlatformViewsRecorder(onCreate: mockEventChannel)
-          ..install();
+        _PlatformViewsRecorder(onCreate: mockEventChannel).install();
         final controller = VlcPlayerController();
 
         await tester.pumpWidget(
@@ -87,7 +86,14 @@ void main() {
             home: SizedBox(
               width: 320,
               height: 180,
-              child: VlcPlayer(controller: controller),
+              child: VlcPlayer(
+                controller: controller,
+                // This test is about the PLATFORM VIEW. Every platform here
+                // defaults to the texture since 2026-09-06, so ask for the
+                // view explicitly on each.
+                darwinRenderer: VlcDarwinRenderer.platformView,
+                androidRenderer: VlcAndroidRenderer.platformView,
+              ),
             ),
           ),
         );
@@ -109,9 +115,7 @@ void main() {
         );
 
         // Nothing under the player may be reachable by directional traversal.
-        final scope = FocusScope.of(
-          tester.element(find.byType(VlcPlayer)),
-        );
+        final scope = FocusScope.of(tester.element(find.byType(VlcPlayer)));
         expect(scope.traversalDescendants, isEmpty);
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -141,7 +145,15 @@ void main() {
             home: SizedBox(
               width: 320,
               height: 180,
-              child: VlcPlayer(controller: controller, fit: VlcVideoFit.fill),
+              child: VlcPlayer(
+                controller: controller,
+                fit: VlcVideoFit.fill,
+                // This test is about the PLATFORM VIEW. Every platform here
+                // defaults to the texture since 2026-09-06, so ask for the
+                // view explicitly on each.
+                darwinRenderer: VlcDarwinRenderer.platformView,
+                androidRenderer: VlcAndroidRenderer.platformView,
+              ),
             ),
           ),
         );
@@ -310,6 +322,133 @@ void main() {
 
       controller.dispose();
       await tester.pumpWidget(const SizedBox.shrink());
+    });
+  });
+
+  testWidgets('scales a picture smaller than the viewport up to fill it', (
+    WidgetTester tester,
+  ) async {
+    // Before the fix this was Center -> FittedBox, and under loose
+    // constraints a FittedBox takes its child's natural size. A 1080p picture
+    // therefore sat at 1:1 in the middle of a larger window - only 4K filled
+    // it, and only because it had to shrink. Here the texture is 160x90 in a
+    // 320x180 viewport: it must come out 320x180, not 160x90.
+    await runAsWindows(() async {
+      final controller = VlcPlayerController();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            if (call.method == 'create') {
+              mockEventChannel(9);
+              return <String, Object?>{'viewId': 9, 'textureId': 44};
+            }
+            return null;
+          });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 320,
+              height: 180,
+              child: VlcPlayer(
+                controller: controller,
+                fit: VlcVideoFit.contain,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const channel = EventChannel('vlc_player/events/9');
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channel.name,
+            channel.codec.encodeSuccessEnvelope(<String, Object?>{
+              'state': 'playing',
+              'videoSize': <String, Object?>{'width': 160, 'height': 90},
+            }),
+            null,
+          );
+      await tester.pump();
+
+      // getRect follows FittedBox's paint transform, so this is the size the
+      // viewer sees. 160x90 here is the old bug.
+      expect(tester.getRect(find.byType(Texture)).size, const Size(320, 180));
+      // No coded size was reported, so nothing is clipped.
+      expect(find.byType(ClipRect), findsNothing);
+
+      controller.dispose();
+    });
+  });
+
+  testWidgets('clips the decoder padding off a texture-backed picture', (
+    WidgetTester tester,
+  ) async {
+    // Decoders pad height to a multiple of 16, so 180 visible rows arrive in a
+    // 192-row buffer whose last twelve rows are never written - and unwritten
+    // NV12 is green. The widget must lay the texture out at the coded size and
+    // clip it to the visible one, anchored top-left where the real rows are.
+    await runAsWindows(() async {
+      final controller = VlcPlayerController();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            if (call.method == 'create') {
+              mockEventChannel(10);
+              return <String, Object?>{'viewId': 10, 'textureId': 45};
+            }
+            return null;
+          });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 320,
+              height: 180,
+              child: VlcPlayer(
+                controller: controller,
+                fit: VlcVideoFit.contain,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const channel = EventChannel('vlc_player/events/10');
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channel.name,
+            channel.codec.encodeSuccessEnvelope(<String, Object?>{
+              'state': 'playing',
+              'videoSize': <String, Object?>{'width': 320, 'height': 180},
+              'codedSize': <String, Object?>{'width': 320, 'height': 192},
+            }),
+            null,
+          );
+      await tester.pump();
+
+      expect(controller.value.codedVideoSize, const Size(320, 192));
+      expect(find.byType(ClipRect), findsOneWidget);
+
+      final align = tester.widget<Align>(
+        find.ancestor(of: find.byType(Texture), matching: find.byType(Align)),
+      );
+      expect(align.alignment, Alignment.topLeft);
+      expect(align.widthFactor, 1.0);
+      expect(align.heightFactor, closeTo(180 / 192, 1e-9));
+
+      // The texture itself is the whole buffer; the clip is what hides the
+      // padding. Laid out at 192 rows, shown as 180.
+      final textureBox = tester.widget<SizedBox>(
+        find
+            .ancestor(of: find.byType(Texture), matching: find.byType(SizedBox))
+            .first,
+      );
+      expect(textureBox.height, 192);
+
+      controller.dispose();
     });
   });
 

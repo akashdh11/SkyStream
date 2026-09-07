@@ -72,12 +72,15 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
   bool _hdOnly = false;
   _KindFilter _kind = _KindFilter.all;
   String? _debridStatus;
-  late SourcesMode _mode;
+
+  /// Whether the sheet was opened to download rather than to play. It is fixed
+  /// for the lifetime of the sheet — both actions sit on every row, so the mode
+  /// only picks the default action and hides links that cannot be saved.
+  bool get _downloadMode => widget.mode == SourcesMode.download;
 
   @override
   void initState() {
     super.initState();
-    _mode = widget.mode;
     WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_start()));
   }
 
@@ -112,7 +115,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
   List<AddonStreamSource> get _visible => _result.streams
       .where((s) {
         if (_hdOnly && s.qualityScore < 1080) return false;
-        if (_mode == SourcesMode.download && (!s.isDirect || s.url == null)) {
+        if (_downloadMode && (!s.isDirect || s.url == null)) {
           return false;
         }
         return switch (_kind) {
@@ -298,14 +301,15 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
   }
 
   Widget _details(ThemeData theme, ColorScheme cs) {
+    final glass = _GlassPalette.of(context);
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
+        color: glass.ink.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        border: Border.all(color: glass.ink.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -317,7 +321,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                   'Add-on status · ${_result.statuses.length}',
                   style: theme.textTheme.labelMedium?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: glass.ink,
                   ),
                 ),
               ),
@@ -392,10 +396,63 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
     );
   }
 
+  Widget _topPickLabel(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, bottom: 6),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              'TOP PICK',
+              style: TextStyle(
+                color: cs.primary,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _readyToPlayLabel(int count) {
+    const green = Color(0xFF10B981);
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, bottom: 6),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.play_circle_outline_rounded,
+            size: 14,
+            color: green,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Ready to play ($count)',
+            style: const TextStyle(
+              color: green,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final glass = _GlassPalette.of(context);
     final episode = widget.episode;
     final subtitleText = episode != null
         ? 'S${episode.season} · E${episode.episode} ${episode.name}'
@@ -407,6 +464,12 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
     final topPick = visible.isNotEmpty ? visible.first : null;
     final remainingReady =
         visible.length > 1 ? visible.sublist(1) : <AddonStreamSource>[];
+    // The list is built lazily, so its sections have to be counted up front:
+    // two slots for the top pick (its label and its card), then one label
+    // ahead of everything else.
+    final rowCount =
+        (topPick == null ? 0 : 2) +
+        (remainingReady.isEmpty ? 0 : 1 + remainingReady.length);
 
     // Dynamic Capsule: Centered floating glass island.
     // Clean Hyprland-inspired blur: sigmaX: 18, alpha: 0.80, 1px white/12 border, zero colored glow.
@@ -434,7 +497,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
               borderRadius: BorderRadius.circular(20),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.50),
+                  color: glass.paneShadow,
                   blurRadius: 50,
                   spreadRadius: 0,
                   offset: const Offset(0, 10),
@@ -450,10 +513,8 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                   Positioned.fill(
                     child: BackdropFilter(
                       filter: ui.ImageFilter.blur(sigmaX: 22.0, sigmaY: 22.0),
-                      child: const DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: Color(0xA6060608), // Frosted glass obsidian tint (65% opacity)
-                        ),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(color: glass.pane),
                       ),
                     ),
                   ),
@@ -461,6 +522,8 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                   Positioned.fill(
                     child: IgnorePointer(
                       child: ShaderMask(
+                        // dstIn: only the gradient's alpha is read, so the
+                        // white stops are opacity, not colour.
                         shaderCallback: (rect) {
                           return const LinearGradient(
                             begin: Alignment.topCenter,
@@ -479,7 +542,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.12),
+                              color: glass.ink.withValues(alpha: 0.12),
                               width: 0.5,
                             ),
                           ),
@@ -506,7 +569,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                                   'Stremio Sources',
                                   style: theme.textTheme.titleMedium?.copyWith(
                                     fontWeight: FontWeight.w700,
-                                    color: Colors.white,
+                                    color: glass.ink,
                                     letterSpacing: -0.2,
                                   ),
                                 ),
@@ -588,7 +651,9 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                                     : _result.completedCount /
                                           _result.totalCount,
                                 minHeight: 2.5,
-                                backgroundColor: Colors.white10,
+                                backgroundColor: glass.ink.withValues(
+                                  alpha: 0.1,
+                                ),
                                 valueColor: AlwaysStoppedAnimation(cs.primary),
                               ),
                             )
@@ -665,7 +730,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                               side: BorderSide(
                                 color: _hdOnly
                                     ? Colors.transparent
-                                    : Colors.white.withValues(alpha: 0.15),
+                                    : glass.ink.withValues(alpha: 0.15),
                                 width: 1,
                               ),
                               backgroundColor: Colors.transparent,
@@ -701,7 +766,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                                   side: BorderSide(
                                     color: _kind == filter
                                         ? Colors.transparent
-                                        : Colors.white.withValues(alpha: 0.15),
+                                        : glass.ink.withValues(alpha: 0.15),
                                     width: 1,
                                   ),
                                   backgroundColor: Colors.transparent,
@@ -784,105 +849,55 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
                                       ),
                               ),
                             )
-                          : ListView(
+                          : ListView.builder(
                               padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
-                              children: [
-                                // Top Pick Highlighted Section
-                                if (topPick != null) ...[
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      left: 2,
-                                      bottom: 6,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 7,
-                                            vertical: 2.5,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: cs.primary.withValues(
-                                              alpha: 0.16,
-                                            ),
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            'TOP PICK',
-                                            style: TextStyle(
-                                              color: cs.primary,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w800,
-                                              letterSpacing: 0.6,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  _SourceRow(
-                                    stream: topPick,
-                                    isBest: true,
-                                    autofocus: true,
-                                    downloadMode: _mode == SourcesMode.download,
-                                    onPlay: () => unawaited(_play(topPick)),
-                                    onDownload: () =>
-                                        unawaited(_download(topPick)),
-                                  ),
-                                  const SizedBox(height: 12),
-                                ],
+                              itemCount: rowCount,
+                              itemBuilder: (context, index) {
+                                if (topPick != null) {
+                                  if (index == 0) return _topPickLabel(cs);
+                                  if (index == 1) {
+                                    return Padding(
+                                      padding: const EdgeInsets.only(
+                                        bottom: 12,
+                                      ),
+                                      child: _SourceRow(
+                                        stream: topPick,
+                                        isBest: true,
+                                        autofocus: true,
+                                        downloadMode: _downloadMode,
+                                        onPlay: () => unawaited(_play(topPick)),
+                                        onDownload: () =>
+                                            unawaited(_download(topPick)),
+                                      ),
+                                    );
+                                  }
+                                }
 
-                                // Remaining Ready to Play Section
-                                if (remainingReady.isNotEmpty) ...[
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      left: 2,
-                                      bottom: 6,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.play_circle_outline_rounded,
-                                          size: 14,
-                                          color: Color(0xFF10B981),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          'Ready to play (${remainingReady.length})',
-                                          style: const TextStyle(
-                                            color: Color(0xFF10B981),
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            letterSpacing: 0.2,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
+                                // Past the top pick: one label, then the rest.
+                                var slot = index - (topPick == null ? 0 : 2);
+                                if (slot == 0) {
+                                  return _readyToPlayLabel(
+                                    remainingReady.length,
+                                  );
+                                }
+                                slot -= 1;
+
+                                final stream = remainingReady[slot];
+                                return Padding(
+                                  padding: EdgeInsets.only(
+                                    top: slot == 0 ? 0 : 6,
                                   ),
-                                  for (
-                                    int i = 0;
-                                    i < remainingReady.length;
-                                    i++
-                                  ) ...[
-                                    if (i > 0) const SizedBox(height: 6),
-                                    _SourceRow(
-                                      stream: remainingReady[i],
-                                      isBest: false,
-                                      autofocus: topPick == null && i == 0,
-                                      downloadMode:
-                                          _mode == SourcesMode.download,
-                                      onPlay: () => unawaited(
-                                        _play(remainingReady[i]),
-                                      ),
-                                      onDownload: () => unawaited(
-                                        _download(remainingReady[i]),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ],
+                                  child: _SourceRow(
+                                    stream: stream,
+                                    isBest: false,
+                                    autofocus: topPick == null && slot == 0,
+                                    downloadMode: _downloadMode,
+                                    onPlay: () => unawaited(_play(stream)),
+                                    onDownload: () =>
+                                        unawaited(_download(stream)),
+                                  ),
+                                );
+                              },
                             ),
                     ),
                   ],
@@ -902,6 +917,68 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
   }
 }
 
+/// Ink and pane colours for the frosted sheet.
+///
+/// The sheet paints its own glass instead of sitting on a themed [Material],
+/// so nothing underneath resolves `onSurface` for the content on top of it.
+/// The dark values are the literals the glass design ships with; the light
+/// ones keep every alpha and only flip the ink, so the panel stays legible
+/// over a bright backdrop without changing shape.
+class _GlassPalette {
+  const _GlassPalette._({
+    required this.pane,
+    required this.paneShadow,
+    required this.ink,
+    required this.cardFocusFill,
+    required this.raisedFill,
+    required this.raisedBorder,
+  });
+
+  /// Backdrop tint painted behind the blur.
+  final Color pane;
+
+  /// Drop shadow under the whole panel.
+  final Color paneShadow;
+
+  /// Text, icons and hairlines drawn on the glass. Callers dial it down with
+  /// `withValues(alpha:)` rather than reaching for another literal.
+  final Color ink;
+
+  /// Fill behind the focused source card.
+  final Color cardFocusFill;
+
+  /// Fill and border of an action chip lifted out of the accent, i.e. the
+  /// focused or hovered Play button.
+  final Color raisedFill;
+  final Color raisedBorder;
+
+  /// Content sitting on a solid [sourceSheetAccent] fill. The accent is
+  /// saturated enough to carry white in either brightness.
+  Color get onAccent => Colors.white;
+
+  static const _dark = _GlassPalette._(
+    pane: Color(0xA6060608), // Frosted glass obsidian tint (65% opacity)
+    paneShadow: Color(0x80000000),
+    ink: Colors.white,
+    cardFocusFill: Color(0xFF242430),
+    raisedFill: Colors.white,
+    raisedBorder: Colors.white,
+  );
+
+  static const _light = _GlassPalette._(
+    pane: Color(0xA6F4F4F7),
+    paneShadow: Color(0x2E000000),
+    ink: Color(0xFF16161C),
+    cardFocusFill: Color(0xFFE6E6EE),
+    raisedFill: Colors.white,
+    // A white chip on a pale pane needs the accent to draw its own edge.
+    raisedBorder: sourceSheetAccent,
+  );
+
+  static _GlassPalette of(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark ? _dark : _light;
+}
+
 class _DpadSourceButton extends StatefulWidget {
   final IconData icon;
   final String label;
@@ -909,7 +986,11 @@ class _DpadSourceButton extends StatefulWidget {
   final VoidCallback? onPressed;
   final bool isPrimary;
   final FocusNode? focusNode;
-  final KeyEventResult Function(FocusNode, KeyEvent)? onKeyEvent;
+
+  /// Arrow keys the chip answers itself. Handled on the chip's own node rather
+  /// than in a wrapping [Focus] so it keeps contributing exactly one focus
+  /// node to directional traversal.
+  final DpadDirectionCallback? onDirection;
 
   const _DpadSourceButton({
     required this.icon,
@@ -918,7 +999,7 @@ class _DpadSourceButton extends StatefulWidget {
     required this.onPressed,
     this.isPrimary = false,
     this.focusNode,
-    this.onKeyEvent,
+    this.onDirection,
   });
 
   @override
@@ -930,54 +1011,58 @@ class _DpadSourceButtonState extends State<_DpadSourceButton> {
 
   @override
   Widget build(BuildContext context) {
+    final glass = _GlassPalette.of(context);
     final enabled = widget.onPressed != null;
 
     if (!enabled) {
-      return ExcludeFocus(
-        child: Tooltip(
-          message: widget.tooltip ?? '',
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.06),
-                width: 0.8,
+      return SourceActionSemantics(
+        enabled: false,
+        child: ExcludeFocus(
+          child: Tooltip(
+            message: widget.tooltip ?? '',
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: glass.ink.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: glass.ink.withValues(alpha: 0.06),
+                  width: 0.8,
+                ),
               ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  widget.icon,
-                  size: 14,
-                  color: Colors.white.withValues(alpha: 0.25),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  widget.label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white.withValues(alpha: 0.25),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    widget.icon,
+                    size: 14,
+                    color: glass.ink.withValues(alpha: 0.25),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 4),
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: glass.ink.withValues(alpha: 0.25),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       );
     }
 
-    final dpadButton = DpadFocusable(
+    return DpadFocusable(
       focusNode: widget.focusNode,
       onSelect: widget.onPressed,
+      onDirection: widget.onDirection,
       child: const SizedBox.shrink(),
       builder: (context, state, _) {
         final isFocused = state.focused;
         final highlight = isFocused || _isHovered;
-        const hotstarAccent = Color(0xFF0A84FF);
 
         final Color bgColor;
         final Color borderColor;
@@ -985,71 +1070,81 @@ class _DpadSourceButtonState extends State<_DpadSourceButton> {
 
         if (widget.isPrimary) {
           if (highlight) {
-            bgColor = Colors.white;
-            borderColor = Colors.white;
-            contentColor = hotstarAccent;
+            bgColor = glass.raisedFill;
+            borderColor = glass.raisedBorder;
+            contentColor = sourceSheetAccent;
           } else {
-            bgColor = hotstarAccent;
-            borderColor = hotstarAccent;
-            contentColor = Colors.white;
+            bgColor = sourceSheetAccent;
+            borderColor = sourceSheetAccent;
+            contentColor = glass.onAccent;
           }
         } else {
           if (highlight) {
-            bgColor = hotstarAccent.withValues(alpha: 0.20);
-            borderColor = hotstarAccent;
-            contentColor = Colors.white;
+            bgColor = sourceSheetAccent.withValues(alpha: 0.20);
+            borderColor = sourceSheetAccent;
+            contentColor = glass.ink;
           } else {
-            bgColor = Colors.white.withValues(alpha: 0.06);
-            borderColor = Colors.white.withValues(alpha: 0.12);
-            contentColor = Colors.white.withValues(alpha: 0.85);
+            bgColor = glass.ink.withValues(alpha: 0.06);
+            borderColor = glass.ink.withValues(alpha: 0.12);
+            contentColor = glass.ink.withValues(alpha: 0.85);
           }
         }
 
-        return Tooltip(
-          message: widget.tooltip ?? widget.label,
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: widget.onPressed,
-              overlayColor: WidgetStateProperty.all(Colors.transparent),
-              hoverColor: Colors.transparent,
-              splashColor: Colors.transparent,
-              highlightColor: Colors.transparent,
-              onHover: (hovered) {
-                if (_isHovered != hovered) {
-                  setState(() => _isHovered = hovered);
-                }
-              },
-              borderRadius: BorderRadius.circular(6),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: borderColor,
-                    width: 1.0,
+        return SourceActionSemantics(
+          enabled: true,
+          child: Tooltip(
+            message: widget.tooltip ?? widget.label,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                // DpadFocusable already publishes this chip's focus node; a
+                // focusable InkWell would add a second one over the same rect
+                // and directional traversal would settle on that instead.
+                canRequestFocus: false,
+                onTap: widget.onPressed,
+                overlayColor: WidgetStateProperty.all(Colors.transparent),
+                hoverColor: Colors.transparent,
+                splashColor: Colors.transparent,
+                highlightColor: Colors.transparent,
+                onHover: (hovered) {
+                  if (_isHovered != hovered) {
+                    setState(() => _isHovered = hovered);
+                  }
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 4,
                   ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      widget.icon,
-                      size: 14,
-                      color: contentColor,
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: borderColor,
+                      width: 1.0,
                     ),
-                    const SizedBox(width: 4),
-                    Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        widget.icon,
+                        size: 14,
                         color: contentColor,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 4),
+                      Text(
+                        widget.label,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: contentColor,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1057,11 +1152,6 @@ class _DpadSourceButtonState extends State<_DpadSourceButton> {
         );
       },
     );
-
-    if (widget.onKeyEvent != null) {
-      return Focus(onKeyEvent: widget.onKeyEvent, child: dpadButton);
-    }
-    return dpadButton;
   }
 }
 
@@ -1160,6 +1250,7 @@ class _SourceRowState extends State<_SourceRow> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final glass = _GlassPalette.of(context);
     final stream = widget.stream;
     final isBest = widget.isBest;
     final downloadMode = widget.downloadMode;
@@ -1168,154 +1259,167 @@ class _SourceRowState extends State<_SourceRow> {
 
     final size = stream.sizeLabel;
 
-    return Focus(
-      onKeyEvent: (node, event) {
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.arrowRight) {
-          _playFocusNode.requestFocus();
-          return KeyEventResult.handled;
+    return DpadFocusable(
+      focusNode: _cardFocusNode,
+      autofocus: widget.autofocus,
+      onSelect: downloadMode && stream.isDirect ? onDownload : onPlay,
+      // Play lives inside the card's own rect, so it can never clear the
+      // `centre.dx >= target.right` test native RIGHT traversal applies — this
+      // one hop stays hand-rolled. The primary-focus guard stops it firing
+      // again for a RIGHT that bubbled up from Download, which has nowhere
+      // further to go.
+      onDirection: (direction) {
+        if (direction != TraversalDirection.right ||
+            !_cardFocusNode.hasPrimaryFocus) {
+          return false;
         }
-        return KeyEventResult.ignored;
+        _playFocusNode.requestFocus();
+        return true;
       },
-      child: DpadFocusable(
-        focusNode: _cardFocusNode,
-        autofocus: widget.autofocus,
-        onSelect: downloadMode && stream.isDirect ? onDownload : onPlay,
-        child: const SizedBox.shrink(),
-        builder: (context, state, _) {
-          final isFocused = state.focused;
-          return Material(
-            color: isFocused
-                ? const Color(0xFF242430)
-                : Colors.transparent,
+      child: const SizedBox.shrink(),
+      builder: (context, state, _) {
+        final isFocused = state.focused;
+        return Material(
+          color: isFocused ? glass.cardFocusFill : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            // DpadFocusable is this card's only focus node. A focusable
+            // InkWell would publish a second one with the same rect, and
+            // traversal landing there leaves the card focused but unpainted.
+            canRequestFocus: false,
+            onTap: downloadMode && stream.isDirect ? onDownload : onPlay,
+            overlayColor: WidgetStateProperty.all(Colors.transparent),
+            hoverColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            onHover: (hovered) {
+              if (_isHovered != hovered) {
+                setState(() => _isHovered = hovered);
+              }
+            },
             borderRadius: BorderRadius.circular(10),
-            child: InkWell(
-              onTap: downloadMode && stream.isDirect ? onDownload : onPlay,
-              overlayColor: WidgetStateProperty.all(Colors.transparent),
-              hoverColor: Colors.transparent,
-              splashColor: Colors.transparent,
-              highlightColor: Colors.transparent,
-              onHover: (hovered) {
-                if (_isHovered != hovered) {
-                  setState(() => _isHovered = hovered);
-                }
-              },
-              borderRadius: BorderRadius.circular(10),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 9,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 9,
+              ),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  // The top pick wears the accent outline permanently, so the
+                  // focus ring has to be a different colour to be readable at
+                  // all — otherwise the best row looks focused from the start.
+                  color: isFocused
+                      ? glass.ink
+                      : (_isHovered || isBest
+                            ? cs.primary
+                            : glass.ink.withValues(alpha: 0.08)),
+                  width: isFocused ? 2 : 1.2,
                 ),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: isFocused || _isHovered || isBest
-                        ? cs.primary
-                        : Colors.white.withValues(alpha: 0.08),
-                    width: 1.2,
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Top row: Premium quality badge (left top) + tags, size, and seeders
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: Wrap(
-                            spacing: 6,
-                            runSpacing: 4,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              _QualityBadge(resolution: stream.qualityLabel),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Top row: Premium quality badge (left top) + tags, size, and seeders
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            _QualityBadge(resolution: stream.qualityLabel),
+                            const SourceTag(
+                              text: 'STREMIO',
+                              color: Color(0xFF7C6BF5),
+                            ),
+                            if (stream.isHdr)
                               const SourceTag(
-                                text: 'STREMIO',
-                                color: Color(0xFF7C6BF5),
+                                text: 'HDR',
+                                color: Colors.deepPurpleAccent,
                               ),
-                              if (stream.isHdr)
-                                const SourceTag(
-                                  text: 'HDR',
-                                  color: Colors.deepPurpleAccent,
+                            if (stream.isTorrent)
+                              SourceTag(text: 'TORRENT', color: cs.primary),
+                            if (stream.isCachedDebrid)
+                              const SourceTag(
+                                text: 'CACHED',
+                                color: Colors.green,
+                              ),
+                            if (stream.isExternal)
+                              SourceTag(
+                                text: 'OPENS APP',
+                                color: cs.secondary,
+                              ),
+                            if (size != null)
+                              Text(
+                                size,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: cs.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
                                 ),
-                              if (stream.isTorrent)
-                                SourceTag(text: 'TORRENT', color: cs.primary),
-                              if (stream.isCachedDebrid)
-                                const SourceTag(
-                                  text: 'CACHED',
-                                  color: Colors.green,
-                                ),
-                              if (stream.isExternal)
-                                SourceTag(
-                                  text: 'OPENS APP',
-                                  color: cs.secondary,
-                                ),
-                              if (size != null)
-                                Text(
-                                  size,
-                                  style: TextStyle(
-                                    fontSize: 11,
+                              ),
+                            if (stream.seeders != null)
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.people_alt_outlined,
+                                    size: 12,
                                     color: cs.onSurfaceVariant,
-                                    fontWeight: FontWeight.w600,
                                   ),
-                                ),
-                              if (stream.seeders != null)
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.people_alt_outlined,
-                                      size: 12,
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    '${stream.seeders}',
+                                    style: TextStyle(
+                                      fontSize: 11,
                                       color: cs.onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
                                     ),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      '${stream.seeders}',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: cs.onSurfaceVariant,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                            ],
-                          ),
+                                  ),
+                                ],
+                              ),
+                          ],
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-
-                    // Source name (starts from left, uses all horizontal space)
-                    Text(
-                      stream.addonName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                        color: Colors.white,
-                        letterSpacing: 0.2,
                       ),
-                    ),
-                    const SizedBox(height: 2),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
 
-                    // Description (starts from left, uses horizontal space)
-                    Text(
-                      stream.subtitleLine,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontSize: 11,
-                      ),
+                  // Source name (starts from left, uses all horizontal space)
+                  Text(
+                    stream.addonName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      color: glass.ink,
+                      letterSpacing: 0.2,
                     ),
-                    const SizedBox(height: 8),
+                  ),
+                  const SizedBox(height: 2),
 
-                    // Bottom row: Empty space on the left, Play and Download buttons on the bottom right corner
-                    Row(
+                  // Description (starts from left, uses horizontal space)
+                  Text(
+                    stream.subtitleLine,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Bottom row: Empty space on the left, Play and Download buttons on the bottom right corner
+                  SourceCardActions(
+                    cardFocusNode: _cardFocusNode,
+                    child: Row(
                       children: [
                         const Spacer(),
                         _DpadSourceButton(
@@ -1327,21 +1431,18 @@ class _SourceRowState extends State<_SourceRow> {
                           isPrimary: true,
                           tooltip: stream.isExternal ? 'Open' : 'Play',
                           onPressed: onPlay,
-                          onKeyEvent: (node, event) {
-                            if (event is KeyDownEvent) {
-                              if (event.logicalKey ==
-                                  LogicalKeyboardKey.arrowLeft) {
-                                _cardFocusNode.requestFocus();
-                                return KeyEventResult.handled;
-                              }
-                              if (event.logicalKey ==
-                                      LogicalKeyboardKey.arrowRight &&
-                                  stream.isDirect) {
-                                _downloadFocusNode.requestFocus();
-                                return KeyEventResult.handled;
-                              }
+                          onDirection: (direction) {
+                            // Back out to the card the same way we came in.
+                            if (direction == TraversalDirection.left) {
+                              _cardFocusNode.requestFocus();
+                              return true;
                             }
-                            return KeyEventResult.ignored;
+                            if (direction == TraversalDirection.right &&
+                                stream.isDirect) {
+                              _downloadFocusNode.requestFocus();
+                              return true;
+                            }
+                            return false;
                           },
                         ),
                         const SizedBox(width: 8),
@@ -1354,25 +1455,23 @@ class _SourceRowState extends State<_SourceRow> {
                               ? 'Download now'
                               : 'Torrent sources cannot be downloaded',
                           onPressed: stream.isDirect ? onDownload : null,
-                          onKeyEvent: (node, event) {
-                            if (event is KeyDownEvent &&
-                                event.logicalKey ==
-                                    LogicalKeyboardKey.arrowLeft) {
-                              _playFocusNode.requestFocus();
-                              return KeyEventResult.handled;
+                          onDirection: (direction) {
+                            if (direction != TraversalDirection.left) {
+                              return false;
                             }
-                            return KeyEventResult.ignored;
+                            _playFocusNode.requestFocus();
+                            return true;
                           },
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }

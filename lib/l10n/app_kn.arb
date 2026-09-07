@@ -422,5 +422,43 @@
   "skipIntro": "ಪ್ರಾರಂಭ ಬಿಟ್ಟುಬಿಡಿ",
   "skipOutro": "ಅಂತ್ಯ ಬಿಟ್ಟುಬಿಡಿ",
   "skipRecap": "ಸಾರಾಂಶ ಬಿಟ್ಟುಬಿಡಿ",
-  "accounts": "ಖಾತೆಗಳು"
+  "accounts": "ಖಾತೆಗಳು",
+  "audio": "ಆಡಿಯೋ",
+  "subtitleDelay": "ಉಪಶೀರ್ಷಿಕೆ ವಿಳಂಬ",
+  "loadSubtitleFile": "ಉಪಶೀರ್ಷಿಕೆ ಫೈಲ್ ಲೋಡ್ ಮಾಡಿ",
+  "searchSubtitlesOnline": "ಆನ್‌ಲೈನ್ ಹುಡುಕಿ",
+  "playerFiles": "ಫೈಲ್‌ಗಳು",
+  "torrentFiles": "ಟೊರೆಂಟ್ ಫೈಲ್‌ಗಳು",
+  "noAudioTracksReported": "ಯಾವುದೇ ಆಡಿಯೋ ಟ್ರ್ಯಾಕ್ ವರದಿಯಾಗಿಲ್ಲ",
+  "playerTrackNumber": "ಟ್ರ್ಯಾಕ್ {id}",
+  "playerCouldNotReadTracks": "ಟ್ರ್ಯಾಕ್‌ಗಳನ್ನು ಓದಲಾಗಲಿಲ್ಲ: {error}",
+  "playerNowPlaying": "ಈಗ ಪ್ಲೇ ಆಗುತ್ತಿದೆ",
+  "playerSourceReachable": "ಲಭ್ಯವಿದೆ",
+  "noSubtitlesFoundTryAnother": "ಯಾವುದೇ ಉಪಶೀರ್ಷಿಕೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ. ಬೇರೆ ಶೀರ್ಷಿಕೆ ಅಥವಾ ಭಾಷೆಯನ್ನು ಪ್ರಯತ್ನಿಸಿ.",
+  "subtitleSearchPrompt": "ಉಪಶೀರ್ಷಿಕೆಗಳನ್ನು ಹುಡುಕಲು ಶೀರ್ಷಿಕೆಯನ್ನು ಹುಡುಕಿ.",
+  "subtitleSearchFailed": "ಹುಡುಕಾಟ ವಿಫಲವಾಗಿದೆ: {error}",
+  "subtitleDownloadFailed": "ಈ ಉಪಶೀರ್ಷಿಕೆಯನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಲಾಗಲಿಲ್ಲ. ಬೇರೆ ಫಲಿತಾಂಶವನ್ನು ಪ್ರಯತ್ನಿಸಿ.",
+  "subtitleLanguage": "ಉಪಶೀರ್ಷಿಕೆ ಭಾಷೆ",
+  "searchOnlineSubtitles": "ಆನ್‌ಲೈನ್ ಉಪಶೀರ್ಷಿಕೆಗಳನ್ನು ಹುಡುಕಿ",
+  "playerSeeders": "{count, plural, =1{1 ಸೀಡರ್} other{{count} ಸೀಡರ್‌ಗಳು}}",
+  "playerQualityFilterDropped": "ನಿಮ್ಮ ಗುಣಮಟ್ಟದ ಆದ್ಯತೆಗೆ ಯಾವುದೇ ಮೂಲ ಹೊಂದಿಕೆಯಾಗಲಿಲ್ಲ, ಆದ್ದರಿಂದ ಎಲ್ಲಾ ಮೂಲಗಳನ್ನು ತೋರಿಸಲಾಗಿದೆ.",
+  "playerSeasonEpisode": "S{season} E{episode}",
+  "playerRuntimeMinutes": "{count} ನಿಮಿಷ",
+  "playerFinished": "ನೀವು {title} ಮುಗಿಸಿದ್ದೀರಿ",
+  "audioDelay": "ಆಡಿಯೋ ವಿಳಂಬ",
+  "@audioDelay": {
+    "description": "Label for the stepper that shifts the audio track earlier or later against the picture. Sits beside subtitleDelay."
+  },
+  "subtitleSearchTitleFallback": "ಈ ಶೀರ್ಷಿಕೆಯ ID ಗೆ ಏನೂ ಹೊಂದಿಕೆಯಾಗಲಿಲ್ಲ. ಬದಲಿಗೆ ಶೀರ್ಷಿಕೆಗೆ ಹೊಂದುವ ಫಲಿತಾಂಶಗಳನ್ನು ತೋರಿಸಲಾಗಿದೆ.",
+  "@subtitleSearchTitleFallback": {
+    "description": "Note above online subtitle results when the ID lookup returned nothing and the search fell back to matching the title text. Must not claim the ID was wrong: some providers answer an empty list when no key is configured."
+  },
+  "subtitleSearchSeasonFallback": "ಈ ಸಂಚಿಕೆಗೆ ಯಾವುದೇ ಉಪಶೀರ್ಷಿಕೆ ಸಿಗಲಿಲ್ಲ. ಇವು ಇಡೀ ಸೀಸನ್‌ನವು, ಆದ್ದರಿಂದ ಫೈಲ್ ಹೆಸರಿನಲ್ಲಿ ಸಂಚಿಕೆ ಸಂಖ್ಯೆಯನ್ನು ಪರಿಶೀಲಿಸಿ.",
+  "@subtitleSearchSeasonFallback": {
+    "description": "Note above online subtitle results when the episode-scoped search returned nothing and the search widened to the whole season. Distinct from subtitleSearchTitleFallback: it must warn that the list covers other episodes too, because the viewer has to pick their own episode's file by name, and it must not mention an ID (the season pass is reached with no ID in play)."
+  },
+  "subtitleAccountsNotConfigured": "ಯಾವುದೇ ಉಪಶೀರ್ಷಿಕೆ ಖಾತೆ ಸೆಟ್ ಆಗಿಲ್ಲ. ಆನ್‌ಲೈನ್ ಹುಡುಕಲು ಸೆಟ್ಟಿಂಗ್‌ಗಳಲ್ಲಿ OpenSubtitles, SubDL ಅಥವಾ SubSource ಕೀಲಿ ಸೇರಿಸಿ.",
+  "@subtitleAccountsNotConfigured": {
+    "description": "Empty state of the online subtitle search when no provider has credentials, so a search would silently return nothing. Points at the Settings screen where keys are added."
+  }
 }

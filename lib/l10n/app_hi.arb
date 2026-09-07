@@ -422,5 +422,43 @@
   "skipIntro": "इंट्रो छोड़ें",
   "skipOutro": "आउट्रो छोड़ें",
   "skipRecap": "रीकैप छोड़ें",
-  "accounts": "खाते"
+  "accounts": "खाते",
+  "audio": "ऑडियो",
+  "subtitleDelay": "उपशीर्षक विलंब",
+  "loadSubtitleFile": "उपशीर्षक फ़ाइल लोड करें",
+  "searchSubtitlesOnline": "ऑनलाइन खोजें",
+  "playerFiles": "फ़ाइलें",
+  "torrentFiles": "टॉरेंट फ़ाइलें",
+  "noAudioTracksReported": "कोई ऑडियो ट्रैक रिपोर्ट नहीं हुआ",
+  "playerTrackNumber": "ट्रैक {id}",
+  "playerCouldNotReadTracks": "ट्रैक पढ़े नहीं जा सके: {error}",
+  "playerNowPlaying": "अभी चल रहा है",
+  "playerSourceReachable": "उपलब्ध",
+  "noSubtitlesFoundTryAnother": "कोई उपशीर्षक नहीं मिला। कोई और शीर्षक या भाषा आज़माएँ।",
+  "subtitleSearchPrompt": "उपशीर्षक खोजने के लिए कोई शीर्षक खोजें।",
+  "subtitleSearchFailed": "खोज विफल: {error}",
+  "subtitleDownloadFailed": "यह उपशीर्षक डाउनलोड नहीं हो सका। कोई और परिणाम आज़माएँ।",
+  "subtitleLanguage": "उपशीर्षक भाषा",
+  "searchOnlineSubtitles": "ऑनलाइन उपशीर्षक खोजें",
+  "playerSeeders": "{count, plural, =1{1 सीडर} other{{count} सीडर}}",
+  "playerQualityFilterDropped": "आपकी गुणवत्ता प्राथमिकता से कोई स्रोत नहीं मिला, इसलिए सभी स्रोत दिखाए गए हैं।",
+  "playerSeasonEpisode": "S{season} E{episode}",
+  "playerRuntimeMinutes": "{count} मिनट",
+  "playerFinished": "आपने {title} पूरा कर लिया",
+  "audioDelay": "ऑडियो विलंब",
+  "@audioDelay": {
+    "description": "Label for the stepper that shifts the audio track earlier or later against the picture. Sits beside subtitleDelay."
+  },
+  "subtitleSearchTitleFallback": "इस शीर्षक की ID से कुछ नहीं मिला। इसके बदले शीर्षक से मिले परिणाम दिखाए गए हैं।",
+  "@subtitleSearchTitleFallback": {
+    "description": "Note above online subtitle results when the ID lookup returned nothing and the search fell back to matching the title text. Must not claim the ID was wrong: some providers answer an empty list when no key is configured."
+  },
+  "subtitleSearchSeasonFallback": "इस एपिसोड के लिए कोई उपशीर्षक नहीं मिला। ये पूरे सीजन के हैं, इसलिए फ़ाइल के नाम में एपिसोड नंबर जाँच लें।",
+  "@subtitleSearchSeasonFallback": {
+    "description": "Note above online subtitle results when the episode-scoped search returned nothing and the search widened to the whole season. Distinct from subtitleSearchTitleFallback: it must warn that the list covers other episodes too, because the viewer has to pick their own episode's file by name, and it must not mention an ID (the season pass is reached with no ID in play)."
+  },
+  "subtitleAccountsNotConfigured": "कोई उपशीर्षक खाता सेट नहीं है। ऑनलाइन खोजने के लिए सेटिंग्स में OpenSubtitles, SubDL या SubSource कुंजी जोड़ें।",
+  "@subtitleAccountsNotConfigured": {
+    "description": "Empty state of the online subtitle search when no provider has credentials, so a search would silently return nothing. Points at the Settings screen where keys are added."
+  }
 }

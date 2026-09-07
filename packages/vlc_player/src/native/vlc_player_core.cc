@@ -19,6 +19,39 @@ int64_t NonNegative(libvlc_time_t value) {
   return std::max<int64_t>(0, value);
 }
 
+// FNV-1a, 64 bit. Not a security hash - it only has to make two different
+// track lists land on two different numbers often enough that a snapshot
+// diff notices, and it has to cost nothing at the 500 ms poll rate.
+constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
+constexpr uint64_t kFnvPrime = 1099511628211ULL;
+
+uint64_t FoldByte(uint64_t hash, uint8_t byte) {
+  return (hash ^ byte) * kFnvPrime;
+}
+
+uint64_t FoldBytes(uint64_t hash, const void* data, size_t size) {
+  const auto* bytes = static_cast<const uint8_t*>(data);
+  for (size_t index = 0; index < size; ++index) {
+    hash = FoldByte(hash, bytes[index]);
+  }
+  return hash;
+}
+
+uint64_t FoldTrackList(uint64_t hash,
+                       const std::vector<VlcTrackDescription>& tracks) {
+  // A list separator, so an id that moves from the audio list to the spu list
+  // cannot leave the fingerprint where it was.
+  hash = FoldByte(hash, 0x1f);
+  for (const auto& track : tracks) {
+    const int32_t id = static_cast<int32_t>(track.id);
+    hash = FoldBytes(hash, &id, sizeof(id));
+    hash = FoldBytes(hash, track.name.data(), track.name.size());
+    // A record separator, so ("a", "bc") and ("ab", "c") differ.
+    hash = FoldByte(hash, 0x1e);
+  }
+  return hash;
+}
+
 std::atomic<uint64_t> g_snapshot_counter{0};
 
 std::string EnvironmentValue(const char* name) {
@@ -107,16 +140,13 @@ VlcPlayerCore::VlcPlayerCore(std::vector<std::string> options,
     return;
   }
 
-  player_->setVideoCallbacks(
-      [this](void** planes) -> void* { return Lock(planes); },
-      [this](void* picture, void* const* planes) { Unlock(picture, planes); },
-      [this](void* picture) { Display(picture); });
-  player_->setVideoFormatCallbacks(
-      [this](char* chroma, uint32_t* width, uint32_t* height,
-             uint32_t* pitches, uint32_t* lines) -> uint32_t {
-        return SetupFormat(chroma, width, height, pitches, lines);
-      },
-      []() {});
+  frame_sink_ = std::make_unique<VlcPixelBufferSink>([this] {
+    if (!disposed_.load() && on_frame_available_) {
+      on_frame_available_();
+    }
+  });
+  video_output_ =
+      std::make_unique<VlcVideoOutput>(player_->get(), frame_sink_.get());
 }
 
 VlcPlayerCore::~VlcPlayerCore() {
@@ -487,142 +517,90 @@ VlcSnapshot VlcPlayerCore::Snapshot() {
   snapshot.playback_speed = static_cast<double>(player_->rate());
   snapshot.audio_delay = player_->audioDelay();
   snapshot.subtitle_delay = player_->spuDelay();
+  snapshot.audio_track = player_->audioTrack();
+  snapshot.subtitle_track = player_->spu();
+  {
+    // No ES event is registered on this core; the poller and the forced
+    // post-mutation snapshots diff the track SET instead. A count cannot see
+    // a same-size swap - an adaptive rendition change or an MPEG-TS PMT
+    // update replaces the audio/spu ES without changing how many there are -
+    // and a consumer that never refetches is left drawing the old names with
+    // nothing ticked, because the active id it is matching no longer exists.
+    const int64_t fingerprint =
+        TrackSetFingerprint(GetAudioTracks(), GetSubtitleTracks());
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (fingerprint != last_track_fingerprint_) {
+      last_track_fingerprint_ = fingerprint;
+      ++track_revision_;
+    }
+    snapshot.track_revision = track_revision_;
+  }
   snapshot.is_ready = IsReadyState(snapshot.state);
   snapshot.is_seekable = player_->isSeekable();
   snapshot.is_live = IsLiveState(snapshot.state) && snapshot.duration == 0 &&
                      !snapshot.is_seekable;
-  {
-    std::lock_guard<std::mutex> lock(video_mutex_);
-    snapshot.video_width = video_width_;
-    snapshot.video_height = video_height_;
-  }
+  uint32_t frame_width = 0;
+  uint32_t frame_height = 0;
+  frame_sink_->FrameSize(&frame_width, &frame_height);
+  snapshot.video_width = frame_width;
+  snapshot.video_height = frame_height;
   return snapshot;
 }
 
 bool VlcPlayerCore::CopyPixels(const uint8_t** out_buffer,
                                uint32_t* width,
                                uint32_t* height) {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  if (render_buffer_.empty()) {
+  if (frame_sink_ == nullptr) {
     return false;
   }
-  if (texture_generation_ != render_generation_) {
-    texture_buffer_ = render_buffer_;
-    texture_generation_ = render_generation_;
-  }
-  *out_buffer = texture_buffer_.data();
-  *width = video_width_;
-  *height = video_height_;
-  return true;
+  return frame_sink_->CopyPixels(out_buffer, width, height);
 }
 
 void VlcPlayerCore::Dispose() {
   if (disposed_.exchange(true)) {
     return;
   }
+  if (video_output_ != nullptr) {
+    video_output_->Detach();
+  }
   if (player_ != nullptr) {
-    libvlc_video_set_callbacks(player_->get(), nullptr, nullptr, nullptr,
-                               nullptr);
-    libvlc_video_set_format_callbacks(player_->get(), nullptr, nullptr);
     player_->stop();
     player_.reset();
   }
+  video_output_.reset();
   on_frame_available_ = nullptr;
   instance_.reset();
 }
 
-uint32_t VlcPlayerCore::SetupFormat(char* chroma,
-                                    uint32_t* width,
-                                    uint32_t* height,
-                                    uint32_t* pitches,
-                                    uint32_t* lines) {
-  std::memcpy(chroma, "RGBA", 4);
-  pitches[0] = *width * 4;
-  lines[0] = *height;
-  ResizeVideoBuffer(*width, *height, pitches[0]);
-  return 1;
-}
-
-void* VlcPlayerCore::Lock(void** planes) {
-  video_mutex_.lock();
-  if (frame_buffer_.empty()) {
-    video_mutex_.unlock();
-    planes[0] = nullptr;
-    return nullptr;
-  }
-  planes[0] = frame_buffer_.data();
-  return this;
-}
-
-void VlcPlayerCore::Unlock(void* picture, void* const* planes) {
-  if (picture == nullptr) {
-    return;
-  }
-  std::swap(frame_buffer_, render_buffer_);
-  ++render_generation_;
-  video_mutex_.unlock();
-}
-
-void VlcPlayerCore::Display(void* picture) {
-  if (!disposed_.load() && on_frame_available_) {
-    on_frame_available_();
-  }
-}
-
-void VlcPlayerCore::ResizeVideoBuffer(uint32_t width,
-                                      uint32_t height,
-                                      uint32_t pitch) {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  const auto buffer_size = static_cast<size_t>(pitch) * height;
-  if (video_width_ == width && video_height_ == height &&
-      video_pitch_ == pitch && frame_buffer_.size() == buffer_size) {
-    return;
-  }
-  video_width_ = width;
-  video_height_ = height;
-  video_pitch_ = pitch;
-  frame_buffer_.assign(buffer_size, 0);
-  render_buffer_.assign(buffer_size, 0);
-  texture_buffer_.assign(buffer_size, 0);
-  render_generation_ = 0;
-  texture_generation_ = 0;
-}
-
 #ifdef VLC_PLAYER_TESTING
+VlcPixelBufferSink* VlcPlayerCore::FrameSinkForTesting() {
+  return frame_sink_.get();
+}
+
 void VlcPlayerCore::ResizeVideoBufferForTesting(uint32_t width,
                                                 uint32_t height,
                                                 uint32_t pitch) {
-  ResizeVideoBuffer(width, height, pitch);
+  frame_sink_->ResizeForTesting(width, height, pitch);
 }
 
 void VlcPlayerCore::SimulateFrameForTesting(uint8_t value) {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  if (frame_buffer_.empty()) {
-    return;
-  }
-  std::fill(frame_buffer_.begin(), frame_buffer_.end(), value);
-  std::swap(frame_buffer_, render_buffer_);
-  ++render_generation_;
+  frame_sink_->SimulateFrameForTesting(value);
 }
 
 const uint8_t* VlcPlayerCore::FrameBufferDataForTesting() const {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  return frame_buffer_.data();
+  return frame_sink_->FrameBufferDataForTesting();
 }
 
 size_t VlcPlayerCore::FrameBufferSizeForTesting() const {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  return frame_buffer_.size();
+  return frame_sink_->FrameBufferSizeForTesting();
 }
 
 uint64_t VlcPlayerCore::RenderGenerationForTesting() const {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  return render_generation_;
+  return frame_sink_->RenderGenerationForTesting();
 }
 
 uint64_t VlcPlayerCore::TextureGenerationForTesting() const {
-  std::lock_guard<std::mutex> lock(video_mutex_);
-  return texture_generation_;
+  return frame_sink_->TextureGenerationForTesting();
 }
 #endif  // VLC_PLAYER_TESTING
 
@@ -713,6 +691,17 @@ VlcMediaTrackInfo VlcPlayerCore::MediaTrackInfo(const VLC::MediaTrack& track) {
     info.sample_rate = track.rate();
   }
   return info;
+}
+
+int64_t VlcPlayerCore::TrackSetFingerprint(
+    const std::vector<VlcTrackDescription>& audio,
+    const std::vector<VlcTrackDescription>& subtitles) {
+  uint64_t hash = kFnvOffsetBasis;
+  hash = FoldTrackList(hash, audio);
+  hash = FoldTrackList(hash, subtitles);
+  // Masked to stay non-negative so -1 remains an unreachable "nothing seen
+  // yet" sentinel for last_track_fingerprint_.
+  return static_cast<int64_t>(hash & 0x7fffffffffffffffULL);
 }
 
 std::vector<VlcTrackDescription> VlcPlayerCore::TrackDescriptions(

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../l10n/generated/app_localizations.dart';
 import '../../../../core/models/torrent_status.dart';
 import '../../../../core/widgets/marquee_widget.dart';
 import '../widgets/hotstar_player_style.dart';
@@ -17,6 +18,7 @@ class TorrentInfoWidget extends StatelessWidget {
     final s = status;
     if (s == null) return const SizedBox.shrink();
 
+    final l10n = AppLocalizations.of(context)!;
     final compact = MediaQuery.sizeOf(context).shortestSide < 600;
     final readMb = s.bytesRead / 1024 / 1024;
     final totalMb = s.totalSize / 1024 / 1024;
@@ -73,7 +75,7 @@ class TorrentInfoWidget extends StatelessWidget {
                   child: _Stat(
                     icon: Icons.download_rounded,
                     value: s.speedString,
-                    label: 'Speed',
+                    label: l10n.speed,
                     compact: compact,
                   ),
                 ),
@@ -82,7 +84,7 @@ class TorrentInfoWidget extends StatelessWidget {
                   child: _Stat(
                     icon: Icons.people_alt_rounded,
                     value: '${s.seeds} / ${s.peers}',
-                    label: 'Seeds / Peers',
+                    label: l10n.seedsPeers,
                     compact: compact,
                   ),
                 ),

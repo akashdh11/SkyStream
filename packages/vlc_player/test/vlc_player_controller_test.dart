@@ -49,37 +49,39 @@ void main() {
       },
     );
 
-    test('headers reach native as real libVLC options, not :http-header',
-        () async {
-      final controller = VlcPlayerController();
-      mockEventChannel(61);
-      await harness.attachController(controller, 61);
+    test(
+      'headers reach native as real libVLC options, not :http-header',
+      () async {
+        final controller = VlcPlayerController();
+        mockEventChannel(61);
+        await harness.attachController(controller, 61);
 
-      await controller.setMedia(
-        VlcMediaSource(
-          uri: Uri.parse('https://example.com/video.mp4'),
-          httpHeaders: const <String, String>{
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://example.com/',
-            'Cookie': 'session=abc',
-          },
-        ),
-      );
+        await controller.setMedia(
+          VlcMediaSource(
+            uri: Uri.parse('https://example.com/video.mp4'),
+            httpHeaders: const <String, String>{
+              'User-Agent': 'Mozilla/5.0',
+              'Referer': 'https://example.com/',
+              'Cookie': 'session=abc',
+            },
+          ),
+        );
 
-      final args = calls.single.arguments as Map<Object?, Object?>;
-      final options = (args['mediaOptions']! as List<Object?>).cast<String>();
+        final args = calls.single.arguments as Map<Object?, Object?>;
+        final options = (args['mediaOptions']! as List<Object?>).cast<String>();
 
-      // The whole point: libVLC has no http-header option, so emitting one
-      // discarded every header. Only names libVLC registers may appear.
-      expect(options, contains(':http-user-agent=Mozilla/5.0'));
-      expect(options, contains(':http-referrer=https://example.com/'));
-      expect(options.any((o) => o.contains('http-header')), isFalse);
-      // Cookie has no libVLC representation at all - the host app has to
-      // proxy it. It must not be smuggled into an option string.
-      expect(options.any((o) => o.contains('session=abc')), isFalse);
+        // The whole point: libVLC has no http-header option, so emitting one
+        // discarded every header. Only names libVLC registers may appear.
+        expect(options, contains(':http-user-agent=Mozilla/5.0'));
+        expect(options, contains(':http-referrer=https://example.com/'));
+        expect(options.any((o) => o.contains('http-header')), isFalse);
+        // Cookie has no libVLC representation at all - the host app has to
+        // proxy it. It must not be smuggled into an option string.
+        expect(options.any((o) => o.contains('session=abc')), isFalse);
 
-      controller.dispose();
-    });
+        controller.dispose();
+      },
+    );
 
     test('caller media options survive alongside translated headers', () async {
       final controller = VlcPlayerController();
@@ -96,10 +98,10 @@ void main() {
 
       final args = calls.single.arguments as Map<Object?, Object?>;
       final options = (args['mediaOptions']! as List<Object?>).cast<String>();
-      expect(options, containsAll(<String>[
-        ':http-user-agent=UA',
-        ':network-caching=1200',
-      ]));
+      expect(
+        options,
+        containsAll(<String>[':http-user-agent=UA', ':network-caching=1200']),
+      );
 
       controller.dispose();
     });
@@ -1729,6 +1731,123 @@ void main() {
       expect(controller.value.error!.message, 'Playback failed');
       expect(controller.value.error!.details, <String, Object?>{'viewId': 16});
       expect(controller.value.errorDescription, 'Playback failed');
+
+      controller.dispose();
+    });
+  });
+
+  group('track snapshot fields under an event throttle', () {
+    // Paused snapshots so the controller never arms its stall timer; the
+    // throttle is the only clock in play.
+    Map<String, Object?> snapshot({
+      required int position,
+      int? audioTrack,
+      int? subtitleTrack,
+      int? trackRevision,
+    }) {
+      return <String, Object?>{
+        'state': 'paused',
+        'position': position,
+        'duration': 60000,
+        'isReady': true,
+        'audioTrack': ?audioTrack,
+        'subtitleTrack': ?subtitleTrack,
+        'trackRevision': ?trackRevision,
+      };
+    }
+
+    Future<VlcPlayerController> throttled(int viewId) async {
+      final controller = VlcPlayerController(
+        eventThrottleInterval: const Duration(milliseconds: 250),
+      );
+      mockEventChannel(viewId);
+      await harness.attachController(controller, viewId);
+      // First snapshot publishes immediately (state idle -> paused).
+      await harness.sendEvent(viewId, snapshot(position: 1000));
+      expect(controller.value.position, const Duration(milliseconds: 1000));
+      return controller;
+    }
+
+    testWidgets('a progress-only tick is still held back', (tester) async {
+      final controller = await throttled(70);
+
+      await harness.sendEvent(70, snapshot(position: 1250));
+      expect(controller.value.position, const Duration(milliseconds: 1000));
+
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(controller.value.position, const Duration(milliseconds: 1250));
+
+      controller.dispose();
+    });
+
+    testWidgets('a subtitle track change is delivered immediately', (
+      tester,
+    ) async {
+      final controller = await throttled(71);
+      expect(controller.value.activeSubtitleTrackId, isNull);
+
+      await harness.sendEvent(71, snapshot(position: 1250, subtitleTrack: 3));
+
+      expect(controller.value.activeSubtitleTrackId, 3);
+      expect(controller.value.position, const Duration(milliseconds: 1250));
+
+      controller.dispose();
+    });
+
+    testWidgets('an audio track change is delivered immediately', (
+      tester,
+    ) async {
+      final controller = await throttled(72);
+
+      await harness.sendEvent(72, snapshot(position: 1250, audioTrack: 2));
+
+      expect(controller.value.activeAudioTrackId, 2);
+      expect(controller.value.position, const Duration(milliseconds: 1250));
+
+      controller.dispose();
+    });
+
+    testWidgets('subtitles turning off (-1) is delivered immediately', (
+      tester,
+    ) async {
+      final controller = await throttled(73);
+      await harness.sendEvent(73, snapshot(position: 1000, subtitleTrack: 3));
+      expect(controller.value.activeSubtitleTrackId, 3);
+
+      await harness.sendEvent(73, snapshot(position: 1250, subtitleTrack: -1));
+
+      expect(controller.value.activeSubtitleTrackId, isNull);
+      expect(controller.value.position, const Duration(milliseconds: 1250));
+
+      controller.dispose();
+    });
+
+    testWidgets('a track revision bump is delivered immediately', (
+      tester,
+    ) async {
+      final controller = await throttled(74);
+      expect(controller.value.trackRevision, 0);
+
+      await harness.sendEvent(74, snapshot(position: 1250, trackRevision: 1));
+
+      expect(controller.value.trackRevision, 1);
+      expect(controller.value.position, const Duration(milliseconds: 1250));
+
+      controller.dispose();
+    });
+
+    testWidgets('an unchanged track id does not bypass the throttle', (
+      tester,
+    ) async {
+      final controller = await throttled(75);
+      await harness.sendEvent(75, snapshot(position: 1000, subtitleTrack: 3));
+
+      await harness.sendEvent(75, snapshot(position: 1250, subtitleTrack: 3));
+      expect(controller.value.position, const Duration(milliseconds: 1000));
+
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(controller.value.position, const Duration(milliseconds: 1250));
+      expect(controller.value.activeSubtitleTrackId, 3);
 
       controller.dispose();
     });

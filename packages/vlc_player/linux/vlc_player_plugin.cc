@@ -334,16 +334,36 @@ class LinuxVlcPlayer {
     return TrackDescriptions(core_->GetAudioTracks());
   }
 
-  std::string SetAudioTrack(int id) { return core_->SetAudioTrack(id); }
+  // Track *selection* snapshots straight away, like SeekTo: the poller is up
+  // to 500 ms behind and the caller is waiting on the active id. Selecting a
+  // track is a synchronous variable write on the player, so the forced
+  // snapshot reads the new id straight back. AddSubtitle below is not like
+  // this.
+  std::string SetAudioTrack(int id) {
+    return RunAndSendSnapshot([this, id] { return core_->SetAudioTrack(id); });
+  }
 
   FlValue* GetSubtitleTracks() {
     return TrackDescriptions(core_->GetSubtitleTracks());
   }
 
-  std::string SetSubtitleTrack(int id) { return core_->SetSubtitleTrack(id); }
-  std::string DisableSubtitle() { return core_->DisableSubtitle(); }
+  std::string SetSubtitleTrack(int id) {
+    return RunAndSendSnapshot(
+        [this, id] { return core_->SetSubtitleTrack(id); });
+  }
+  std::string DisableSubtitle() {
+    return RunAndSendSnapshot([this] { return core_->DisableSubtitle(); });
+  }
+  // Unlike the selections above, this one cannot report its own result.
+  // libVLC 3 posts an added slave to the input thread
+  // (INPUT_CONTROL_ADD_SLAVE), so the snapshot forced here is still the
+  // pre-add track set; it is sent to keep the rest of the payload fresh, not
+  // to announce the subtitle. There is no ES event on this core, so the new
+  // track surfaces on a later poll, when the track-set fingerprint in
+  // VlcPlayerCore::Snapshot() moves and with it trackRevision. Callers must
+  // wait on that revision, not on this call returning.
   std::string AddSubtitle(const std::string& uri) {
-    return core_->AddSubtitle(uri);
+    return RunAndSendSnapshot([this, &uri] { return core_->AddSubtitle(uri); });
   }
   FlValue* GetMediaInfo() { return MediaInfo(core_->GetMediaInfo()); }
   FlValue* GetMediaStats() { return MediaStats(core_->GetMediaStats()); }
@@ -447,6 +467,12 @@ class LinuxVlcPlayer {
                              fl_value_new_int(snapshot.audio_delay));
     fl_value_set_string_take(event, "subtitleDelay",
                              fl_value_new_int(snapshot.subtitle_delay));
+    fl_value_set_string_take(event, "audioTrack",
+                             fl_value_new_int(snapshot.audio_track));
+    fl_value_set_string_take(event, "subtitleTrack",
+                             fl_value_new_int(snapshot.subtitle_track));
+    fl_value_set_string_take(event, "trackRevision",
+                             fl_value_new_int(snapshot.track_revision));
     fl_value_set_string_take(event, "isReady",
                              fl_value_new_bool(snapshot.is_ready));
     fl_value_set_string_take(event, "isSeekable",

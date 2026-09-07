@@ -40,9 +40,11 @@ VlcSubtitleStyle subtitleStyleFrom(PlayerSettings settings) {
   return VlcSubtitleStyle(
     relativeFontSize: relative,
     color: Color(settings.subtitleColor),
-    // A fully transparent background is the app's default, and VLC draws no
-    // box for it — but the outline is what keeps white text legible over a
-    // bright scene, so it is always on.
+    // The stored colour's own alpha is discarded above, so opacity 0 is the
+    // only way to ask for no box at all — and null, not a transparent colour,
+    // is how VLC is told to draw none. The default (0.5) therefore does draw
+    // one. The outline is unconditional either way: it is what keeps white
+    // text legible over a bright scene when there is no box behind it.
     backgroundColor: background.a == 0 ? null : background,
     outlineColor: const Color(0xFF000000),
     outlineThickness: 2,

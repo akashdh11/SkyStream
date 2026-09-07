@@ -9,8 +9,8 @@ import '../../../core/extensions/models/extension_plugin.dart';
 import '../../../core/storage/extension_repository.dart';
 import '../../../core/storage/settings_repository.dart';
 import '../../../core/utils/layout_constants.dart';
-import '../../../shared/widgets/custom_widgets.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../../../shared/widgets/text_input_dialog.dart';
 import '../../../core/services/notification_service.dart';
 import '../../settings/presentation/widgets/settings_widgets.dart';
 
@@ -493,49 +493,26 @@ class _PluginSettingsScreenState extends ConsumerState<PluginSettingsScreen> {
   Future<void> _showTextDialog(PluginSettingDefinition definition) async {
     if (_saving) return;
 
-    final editor = TextEditingController(
-      text:
+    final value = await TextInputDialog.show(
+      context,
+      title: definition.title,
+      // Stored verbatim: the old dialog never trimmed, and a plugin may rely
+      // on the exact text - a separator or a deliberate trailing space.
+      trim: false,
+      initialText:
           _controllers[definition.key]?.text ??
           _values[definition.key] ??
           definition.defaultValue,
+      keyboardType: definition.type == PluginSettingType.url
+          ? TextInputType.url
+          : TextInputType.text,
+      hintText: definition.type == PluginSettingType.url
+          ? 'https://example.com'
+          : null,
+      helperText: definition.description,
+      confirmLabel: 'Apply',
+      allowEmpty: true,
     );
-
-    final value = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        surfaceTintColor: Colors.transparent,
-        title: Text(definition.title),
-        content: CustomTextField(
-          controller: editor,
-          autofocus: true,
-          keyboardType: definition.type == PluginSettingType.url
-              ? TextInputType.url
-              : TextInputType.text,
-          hintText: definition.type == PluginSettingType.url
-              ? 'https://example.com'
-              : null,
-          decoration: InputDecoration(
-            helperText: definition.description,
-            alignLabelWithHint: true,
-          ),
-          onSubmitted: (submitted) {
-            Navigator.of(dialogContext).pop(submitted);
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(editor.text),
-            child: const Text('Apply'),
-          ),
-        ],
-      ),
-    );
-
-    editor.dispose();
 
     if (value == null || !mounted) return;
     setState(() {

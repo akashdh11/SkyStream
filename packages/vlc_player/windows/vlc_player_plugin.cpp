@@ -412,16 +412,36 @@ class WindowsVlcPlayer {
     return TrackDescriptions(core_->GetAudioTracks());
   }
 
-  std::string SetAudioTrack(int id) { return core_->SetAudioTrack(id); }
+  // Track *selection* snapshots straight away, like SeekTo: the poller is up
+  // to 500 ms behind and the caller is waiting on the active id. Selecting a
+  // track is a synchronous variable write on the player, so the forced
+  // snapshot reads the new id straight back. AddSubtitle below is not like
+  // this.
+  std::string SetAudioTrack(int id) {
+    return RunAndSendSnapshot([this, id] { return core_->SetAudioTrack(id); });
+  }
 
   EncodableList GetSubtitleTracks() {
     return TrackDescriptions(core_->GetSubtitleTracks());
   }
 
-  std::string SetSubtitleTrack(int id) { return core_->SetSubtitleTrack(id); }
-  std::string DisableSubtitle() { return core_->DisableSubtitle(); }
+  std::string SetSubtitleTrack(int id) {
+    return RunAndSendSnapshot(
+        [this, id] { return core_->SetSubtitleTrack(id); });
+  }
+  std::string DisableSubtitle() {
+    return RunAndSendSnapshot([this] { return core_->DisableSubtitle(); });
+  }
+  // Unlike the selections above, this one cannot report its own result.
+  // libVLC 3 posts an added slave to the input thread
+  // (INPUT_CONTROL_ADD_SLAVE), so the snapshot forced here is still the
+  // pre-add track set; it is sent to keep the rest of the payload fresh, not
+  // to announce the subtitle. There is no ES event on this core, so the new
+  // track surfaces on a later poll, when the track-set fingerprint in
+  // VlcPlayerCore::Snapshot() moves and with it trackRevision. Callers must
+  // wait on that revision, not on this call returning.
   std::string AddSubtitle(const std::string &uri) {
-    return core_->AddSubtitle(uri);
+    return RunAndSendSnapshot([this, &uri] { return core_->AddSubtitle(uri); });
   }
   EncodableMap GetMediaInfo() { return MediaInfo(core_->GetMediaInfo()); }
   EncodableMap GetMediaStats() { return MediaStats(core_->GetMediaStats()); }
@@ -520,6 +540,11 @@ class WindowsVlcPlayer {
         EncodableValue(snapshot.audio_delay);
     event[EncodableValue("subtitleDelay")] =
         EncodableValue(snapshot.subtitle_delay);
+    event[EncodableValue("audioTrack")] = EncodableValue(snapshot.audio_track);
+    event[EncodableValue("subtitleTrack")] =
+        EncodableValue(snapshot.subtitle_track);
+    event[EncodableValue("trackRevision")] =
+        EncodableValue(snapshot.track_revision);
     event[EncodableValue("isReady")] = EncodableValue(snapshot.is_ready);
     event[EncodableValue("isSeekable")] = EncodableValue(snapshot.is_seekable);
     event[EncodableValue("isLive")] = EncodableValue(snapshot.is_live);
